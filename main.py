@@ -1,77 +1,88 @@
-"""
-PG-Power: GPIB电源上位机实时采集工具
-=====================================
-基于 ni4882.dll + PyQt5 + PyQtGraph
-功能：设备连接、SCPI控制、电压/电流实时曲线、启停控制、数据采集
-环境要求：
-  1. 已安装 NI-488.2 驱动，ni4882.dll 正常可用
-  2. pip install pyqt5 pyqtgraph
-  3. Python 位数与 ni4882.dll 位数一致（32/64 位匹配）
-"""
 import sys
-import time
+import os
 import ctypes
 import threading
+import platform
+import time
 from ctypes import c_int, c_char_p, create_string_buffer
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QSpinBox, QGroupBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
 import pyqtgraph as pg
 
-# ===================== 1. 底层 GPIB(ni4882.dll) 封装 =====================
-# 加载DLL（带异常处理，无DLL时GUI仍可启动）
+# ==============================================
+# 1. 自动检测 Python 位数，选择对应 ni4882.dll
+# ==============================================
+def get_ni4882_dll_path():
+    """
+    自动检测当前 Python 位数，返回对应的 ni4882.dll 路径
+    优先级：
+    1. 当前目录下的 ni4882.dll
+    2. 系统目录下的对应位数 DLL
+    """
+    python_bits = platform.architecture()[0]
+    print(f"当前 Python 位数: {python_bits}")
+
+    # 1. 优先检查当前目录
+    local_dll = os.path.join(os.path.dirname(__file__), "ni4882.dll")
+    if os.path.exists(local_dll):
+        print(f"使用当前目录下的 DLL: {local_dll}")
+        return local_dll
+
+    # 2. 检查系统目录
+    if python_bits == "64bit":
+        # 64位系统下 System32 放的是64位 DLL
+        sys_path = os.path.join(os.environ["SystemRoot"], "System32", "ni4882.dll")
+    else:
+        # 32位 DLL 在 SysWOW64（64位系统）或 System32（32位系统）
+        sys_path = os.path.join(os.environ["SystemRoot"], "SysWOW64", "ni4882.dll")
+        if not os.path.exists(sys_path):
+            sys_path = os.path.join(os.environ["SystemRoot"], "System32", "ni4882.dll")
+
+    if os.path.exists(sys_path):
+        print(f"使用系统目录下的 DLL: {sys_path}")
+        return sys_path
+    else:
+        raise FileNotFoundError("找不到 ni4882.dll，请安装 NI-488.2 驱动或放置在程序目录")
+
+# 加载 DLL（自动适配位数）
 try:
-    ni4882 = ctypes.WinDLL("ni4882.dll")
-    _dll_loaded = True
-
-    # 函数原型声明
-    ni4882.ibdev.argtypes = [c_int, c_int, c_int, c_int, c_int, c_int]
-    ni4882.ibdev.restype = c_int
-
-    ni4882.ibwrt.argtypes = [c_int, c_char_p, c_int]
-    ni4882.ibwrt.restype = c_int
-
-    ni4882.ibrd.argtypes = [c_int, c_char_p, c_int]
-    ni4882.ibrd.restype = c_int
-
-    ni4882.ibonl.argtypes = [c_int, c_int]
-    ni4882.ibonl.restype = c_int
+    ni4882 = ctypes.WinDLL(get_ni4882_dll_path())
 except Exception as e:
-    _dll_loaded = False
-    _dll_error = str(e)
-else:
-    _dll_error = ""
+    print(f"加载 ni4882.dll 失败: {e}")
+    sys.exit(1)
 
-# GPIB 全局配置
-BOARD_IDX = 0       # GPIB板卡号
-SAD_ADDR = 0        # 副地址
+# ===================== 2. 底层 GPIB 函数声明 =====================
+ni4882.ibdev.argtypes = [c_int, c_int, c_int, c_int, c_int, c_int]
+ni4882.ibdev.restype = c_int
+
+ni4882.ibwrt.argtypes = [c_int, c_char_p, c_int]
+ni4882.ibwrt.restype = c_int
+
+ni4882.ibrd.argtypes = [c_int, c_char_p, c_int]
+ni4882.ibrd.restype = c_int
+
+ni4882.ibonl.argtypes = [c_int, c_int]
+ni4882.ibonl.restype = c_int
+
+# ===================== 3. GPIB 配置与全局变量 =====================
+BOARD_IDX = 0       # GPIB板卡号（通常为0）
+SAD_ADDR = 0        # 副地址，普通仪器填0
 TIMEOUT_LVL = 13    # 超时等级(13=10s)
 EOT = 1
 EOS = 0
 READ_BUF_LEN = 256
 
-# 全局变量
 gpib_ud = -1        # 设备句柄
 collect_running = False  # 采集启停标志
 data_lock = threading.Lock()
 
-
-# GPIB 基础方法
-def _check_dll():
-    """检查DLL是否加载成功"""
-    global _dll_loaded
-    return _dll_loaded
-
-
+# ===================== 4. GPIB 基础封装 =====================
 def gpib_open(pad_addr: int) -> bool:
     """打开GPIB设备"""
     global gpib_ud
-    if not _check_dll():
-        print("ni4882.dll 未加载，请检查驱动安装")
-        return False
     gpib_ud = ni4882.ibdev(BOARD_IDX, pad_addr, SAD_ADDR, TIMEOUT_LVL, EOT, EOS)
     return gpib_ud >= 0
-
 
 def gpib_close():
     """关闭GPIB设备"""
@@ -80,18 +91,16 @@ def gpib_close():
         ni4882.ibonl(gpib_ud, 0)
         gpib_ud = -1
 
-
 def gpib_send_cmd(cmd: str):
     """发送SCPI命令"""
-    if gpib_ud < 0 or not _check_dll():
+    if gpib_ud < 0:
         return
     cmd_bytes = (cmd + "\r\n").encode("ascii")
     ni4882.ibwrt(gpib_ud, cmd_bytes, len(cmd_bytes))
 
-
 def gpib_query(cmd: str) -> str:
     """发送查询命令并读取返回值"""
-    if gpib_ud < 0 or not _check_dll():
+    if gpib_ud < 0:
         return ""
     buf = create_string_buffer(READ_BUF_LEN)
     cmd_bytes = (cmd + "\r\n").encode("ascii")
@@ -99,12 +108,11 @@ def gpib_query(cmd: str) -> str:
     ni4882.ibrd(gpib_ud, buf, READ_BUF_LEN)
     return buf.value.decode("ascii").strip()
 
-
-# ===================== 2. 主界面 + 绘图逻辑 =====================
+# ===================== 5. 主界面 + 绘图逻辑 =====================
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("GPIB 电源实时采集工具")
+        self.setWindowTitle("GPIB 电源实时采集工具（自动适配DLL位数）")
         self.resize(1000, 600)
 
         # 采集数据缓存
@@ -115,13 +123,6 @@ class MainWindow(QMainWindow):
 
         # 初始化UI
         self.init_ui()
-        # 显示DLL加载状态
-        if not _check_dll():
-            self.statusBar().showMessage(
-                f"⚠ ni4882.dll 未加载：{_dll_error}"
-            )
-        else:
-            self.statusBar().showMessage("✅ ni4882.dll 已加载")
         # 定时器：界面刷新(20ms)
         self.ui_timer = QTimer()
         self.ui_timer.setInterval(20)
@@ -175,12 +176,8 @@ class MainWindow(QMainWindow):
         self.plot_widget.addLegend()
 
         # 两条曲线：电压(红色)、电流(绿色)
-        self.curve_volt = self.plot_widget.plot(
-            pen=pg.mkPen(color=(255, 0, 0), width=2), name="电压(V)"
-        )
-        self.curve_curr = self.plot_widget.plot(
-            pen=pg.mkPen(color=(0, 255, 0), width=2), name="电流(A)"
-        )
+        self.curve_volt = self.plot_widget.plot(pen=pg.mkPen(color=(255, 0, 0), width=2), name="电压(V)")
+        self.curve_curr = self.plot_widget.plot(pen=pg.mkPen(color=(0, 255, 0), width=2), name="电流(A)")
 
         main_layout.addWidget(self.plot_widget)
 
@@ -261,7 +258,6 @@ class MainWindow(QMainWindow):
         collect_running = False
         gpib_close()
         event.accept()
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
