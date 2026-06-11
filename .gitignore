@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 虚拟环境
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# AtomCode 配置
+.atomcode/
+
+# 系统文件
+Thumbs.db
+.DS_Store
