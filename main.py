@@ -19,21 +19,28 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSlot
 import pyqtgraph as pg
 
 # ===================== 1. 底层 GPIB(ni4882.dll) 封装 =====================
-# 加载DLL
-ni4882 = ctypes.WinDLL("ni4882.dll")
+# 加载DLL（带异常处理，无DLL时GUI仍可启动）
+try:
+    ni4882 = ctypes.WinDLL("ni4882.dll")
+    _dll_loaded = True
 
-# 函数原型声明
-ni4882.ibdev.argtypes = [c_int, c_int, c_int, c_int, c_int, c_int]
-ni4882.ibdev.restype = c_int
+    # 函数原型声明
+    ni4882.ibdev.argtypes = [c_int, c_int, c_int, c_int, c_int, c_int]
+    ni4882.ibdev.restype = c_int
 
-ni4882.ibwrt.argtypes = [c_int, c_char_p, c_int]
-ni4882.ibwrt.restype = c_int
+    ni4882.ibwrt.argtypes = [c_int, c_char_p, c_int]
+    ni4882.ibwrt.restype = c_int
 
-ni4882.ibrd.argtypes = [c_int, c_char_p, c_int]
-ni4882.ibrd.restype = c_int
+    ni4882.ibrd.argtypes = [c_int, c_char_p, c_int]
+    ni4882.ibrd.restype = c_int
 
-ni4882.ibonl.argtypes = [c_int, c_int]
-ni4882.ibonl.restype = c_int
+    ni4882.ibonl.argtypes = [c_int, c_int]
+    ni4882.ibonl.restype = c_int
+except Exception as e:
+    _dll_loaded = False
+    _dll_error = str(e)
+else:
+    _dll_error = ""
 
 # GPIB 全局配置
 BOARD_IDX = 0       # GPIB板卡号
@@ -50,9 +57,18 @@ data_lock = threading.Lock()
 
 
 # GPIB 基础方法
+def _check_dll():
+    """检查DLL是否加载成功"""
+    global _dll_loaded
+    return _dll_loaded
+
+
 def gpib_open(pad_addr: int) -> bool:
     """打开GPIB设备"""
     global gpib_ud
+    if not _check_dll():
+        print("ni4882.dll 未加载，请检查驱动安装")
+        return False
     gpib_ud = ni4882.ibdev(BOARD_IDX, pad_addr, SAD_ADDR, TIMEOUT_LVL, EOT, EOS)
     return gpib_ud >= 0
 
@@ -67,7 +83,7 @@ def gpib_close():
 
 def gpib_send_cmd(cmd: str):
     """发送SCPI命令"""
-    if gpib_ud < 0:
+    if gpib_ud < 0 or not _check_dll():
         return
     cmd_bytes = (cmd + "\r\n").encode("ascii")
     ni4882.ibwrt(gpib_ud, cmd_bytes, len(cmd_bytes))
@@ -75,7 +91,7 @@ def gpib_send_cmd(cmd: str):
 
 def gpib_query(cmd: str) -> str:
     """发送查询命令并读取返回值"""
-    if gpib_ud < 0:
+    if gpib_ud < 0 or not _check_dll():
         return ""
     buf = create_string_buffer(READ_BUF_LEN)
     cmd_bytes = (cmd + "\r\n").encode("ascii")
@@ -99,6 +115,13 @@ class MainWindow(QMainWindow):
 
         # 初始化UI
         self.init_ui()
+        # 显示DLL加载状态
+        if not _check_dll():
+            self.statusBar().showMessage(
+                f"⚠ ni4882.dll 未加载：{_dll_error}"
+            )
+        else:
+            self.statusBar().showMessage("✅ ni4882.dll 已加载")
         # 定时器：界面刷新(20ms)
         self.ui_timer = QTimer()
         self.ui_timer.setInterval(20)
