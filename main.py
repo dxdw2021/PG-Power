@@ -626,7 +626,12 @@ class Main(QMainWindow):
 
     # ===== Tab2: Settings =====
     def _init_settings(self, parent):
-        lay=QVBoxLayout(parent); lay.setSpacing(12); lay.setContentsMargins(16,12,16,12)
+        # Wrap in scroll area for low resolution
+        scroll=QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content=QWidget()
+        lay=QVBoxLayout(content); lay.setSpacing(12); lay.setContentsMargins(16,12,16,12)
 
         # === GPIB连接控制 ===
         g_gpi=QGroupBox("GPIB连接控制")
@@ -766,6 +771,11 @@ class Main(QMainWindow):
         lay.addWidget(g_scr)
 
         lay.addStretch()
+        
+        scroll.setWidget(content)
+        parent_layout=QVBoxLayout(parent)
+        parent_layout.setContentsMargins(0,0,0,0)
+        parent_layout.addWidget(scroll)
 
     def _auto_adapt(self):
         if self.chk_auto.isChecked():
