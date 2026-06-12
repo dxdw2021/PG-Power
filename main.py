@@ -73,73 +73,94 @@ def g_qry(c):
     ni4882.ibrd(gpib_ud, buf, 256); return buf.value.decode().strip()
 
 # ===== Theme =====
-DARK = """
-QMainWindow,QWidget{background:#1e1e2e;color:#cdd6f4;font-family:"Microsoft YaHei","Segoe UI",sans-serif;font-size:13px}
-QGroupBox{background:#181825;border:1px solid #313244;border-radius:8px;margin-top:14px;padding:12px;font-weight:bold;color:#cdd6f4}
-QGroupBox::title{subcontrol-origin:margin;left:10px;padding:0 4px;color:#6c7086;font-size:11px}
-QLabel{color:#bac2de;background:transparent}
-QPushButton{border:1px solid #313244;border-radius:6px;padding:6px 12px;min-height:28px;font-weight:bold;color:#fff}
-QPushButton:hover{opacity:0.9;background:#313244}QPushButton:pressed{padding-top:7px;padding-bottom:5px}
-QPushButton:disabled{background:#313244!important;color:#585b70!important;border-color:#313244!important}
-QPushButton#conn{background:#89b4fa;border-color:#89b4fa}QPushButton#start{background:#a6e3a1;border-color:#a6e3a1}
-QPushButton#stop{background:#f38ba8;border-color:#f38ba8}
-QPushButton#test{background:#313244;color:#bac2de;border-color:#45475a}QPushButton#test:checked{background:#fab387;border-color:#fab387}
-QPushButton#save{background:#89b4fa;border-color:#89b4fa}QPushButton#load{background:#cba6f7;border-color:#cba6f7}
-QPushButton#clear{background:#6c7086;border-color:#6c7086}
-QPushButton#on{background:#a6e3a1;border-color:#a6e3a1}QPushButton#off{background:#f38ba8;border-color:#f38ba8}
-QMessageBox{background:#1e1e2e}
-QMessageBox QLabel{color:#cdd6f4}
-QMessageBox QPushButton{min-width:80px;padding:8px 16px}
-QTabWidget::pane{border:1px solid #313244;border-radius:4px;background:#1e1e2e}
-QTabBar::tab{background:#181825;color:#6c7086;padding:8px 16px;border:1px solid #313244;border-bottom:none;border-radius:4px 4px 0 0;margin-right:2px}
-QTabBar::tab:selected{color:#cdd6f4;background:#1e1e2e;border-color:#89b4fa;border-bottom:2px solid #89b4fa}
-QTabBar::tab:hover{color:#bac2de;background:#1e1e2e}
-QTextEdit{background:#11111b;border:1px solid #313244;border-radius:4px;color:#bac2de;font-family:"Consolas",monospace;font-size:12px}
-QSpinBox,QDoubleSpinBox,QComboBox{background:#11111b;border:1px solid #313244;border-radius:4px;padding:4px 8px;color:#cdd6f4;min-height:22px}
-QToolBar{background:#11111b;border-bottom:1px solid #313244;spacing:4px;padding:2px}
-QToolBar QToolButton{background:#1e1e2e;color:#bac2de;border:1px solid #313244;border-radius:4px;padding:4px 10px;font-weight:bold}
-QToolBar QToolButton:hover{background:#313244;color:#cdd6f4;border-color:#45475a}
-QToolBar QToolButton:pressed{background:#45475a}
-QStatusBar{background:#11111b;border-top:1px solid #313244;color:#6c7086;font-size:11px}
-QSlider::groove:horizontal{height:4px;background:#313244;border-radius:2px}
-QSlider::handle:horizontal{width:14px;height:14px;margin:-5px 0;background:#89b4fa;border-radius:7px}
-QProgressBar{border:1px solid #313244;border-radius:4px;text-align:center;color:#cdd6f4}
-QProgressBar::chunk{background:#89b4fa;border-radius:3px}
-"""
-
-LIGHT = """
-QMainWindow,QWidget{background:#eff1f5;color:#4c4f69;font-family:"Microsoft YaHei","Segoe UI",sans-serif;font-size:13px}
-QGroupBox{background:#e6e9ef;border:1px solid #ccd0da;border-radius:8px;margin-top:14px;padding:12px;font-weight:bold;color:#4c4f69}
-QGroupBox::title{subcontrol-origin:margin;left:10px;padding:0 4px;color:#7c7f93;font-size:11px}
-QLabel{color:#5c5f77;background:transparent}
-QPushButton{border:none;border-radius:6px;padding:6px 12px;min-height:28px;font-weight:bold;color:#fff}
-QPushButton:hover{opacity:0.9}QPushButton:pressed{padding-top:7px;padding-bottom:5px}
-QPushButton:disabled{background:#ccd0da!important;color:#9ca0b0!important}
-QPushButton#conn{background:#1e66f5}QPushButton#start{background:#40a02b}QPushButton#stop{background:#d20f39}
-QPushButton#test{background:#ccd0da;color:#5c5f77}QPushButton#test:checked{background:#fe640b}
-QPushButton#save{background:#1e66f5}QPushButton#load{background:#8839ef}QPushButton#clear{background:#7c7f93}
-QPushButton#on{background:#40a02b}QPushButton#off{background:#d20f39}
-QTabWidget::pane{border:1px solid #ccd0da}
-QTabBar::tab{background:#e6e9ef;color:#7c7f93;padding:8px 16px;border:none;border-bottom:2px solid transparent}
-QTabBar::tab:selected{color:#4c4f69;border-bottom:2px solid #1e66f5}
-QTextEdit{background:#fff;background:#eff1f5;border:1px solid #ccd0da;border-radius:4px;color:#5c5f77;font-family:"Consolas",monospace;font-size:12px}
-QSpinBox,QDoubleSpinBox,QComboBox{background:#eff1f5;border:1px solid #ccd0da;border-radius:4px;padding:4px 8px;color:#4c4f69;min-height:22px}
-QToolBar{background:#e6e9ef;border-bottom:1px solid #ccd0da;spacing:4px;padding:2px}
-QToolBar QToolButton{background:#eff1f5;color:#5c5f77;border:1px solid #ccd0da;border-radius:4px;padding:4px 10px;font-weight:bold}
-QToolBar QToolButton:hover{background:#ccd0da;color:#4c4f69;border-color:#bcc0cc}
-QToolBar QToolButton:pressed{background:#bcc0cc}
-QStatusBar{background:#e6e9ef;border-top:1px solid #ccd0da;color:#7c7f93;font-size:11px}
-QSlider::groove:horizontal{height:4px;background:#ccd0da;border-radius:2px}
-QSlider::handle:horizontal{width:14px;height:14px;margin:-5px 0;background:#1e66f5;border-radius:7px}
-QProgressBar{border:1px solid #ccd0da;border-radius:4px;text-align:center;color:#4c4f69}
-QProgressBar::chunk{background:#1e66f5;border-radius:3px}
-"""
+def get_themes(is_low_res):
+    fs = "11px" if is_low_res else "13px"
+    fs_title = "10px" if is_low_res else "11px"
+    fs_btn = "11px" if is_low_res else "13px"
+    pad = "4px 8px" if is_low_res else "6px 12px"
+    h = "24px" if is_low_res else "28px"
+    gp_pad = "6px" if is_low_res else "12px"
+    tab_pad = "5px 10px" if is_low_res else "8px 16px"
+    
+    DARK = f"""
+    QMainWindow,QWidget{{background:#1e1e2e;color:#cdd6f4;font-family:"Microsoft YaHei","Segoe UI",sans-serif;font-size:{fs}}}
+    QGroupBox{{background:#181825;border:1px solid #313244;border-radius:8px;margin-top:14px;padding:{gp_pad};font-weight:bold;color:#cdd6f4}}
+    QGroupBox::title{{subcontrol-origin:margin;left:10px;padding:0 4px;color:#6c7086;font-size:{fs_title}}}
+    QLabel{{color:#bac2de;background:transparent}}
+    QPushButton{{border:1px solid #313244;border-radius:6px;padding:{pad};min-height:{h};font-weight:bold;color:#fff;font-size:{fs_btn}}}
+    QPushButton:hover{{opacity:0.9;background:#313244}}QPushButton:pressed{{padding-top:7px;padding-bottom:5px}}
+    QPushButton:disabled{{background:#313244!important;color:#585b70!important;border-color:#313244!important}}
+    QPushButton#conn{{background:#89b4fa;border-color:#89b4fa}}QPushButton#start{{background:#a6e3a1;border-color:#a6e3a1}}
+    QPushButton#stop{{background:#f38ba8;border-color:#f38ba8}}
+    QPushButton#test{{background:#313244;color:#bac2de;border-color:#45475a}}QPushButton#test:checked{{background:#fab387;border-color:#fab387}}
+    QPushButton#save{{background:#89b4fa;border-color:#89b4fa}}QPushButton#load{{background:#cba6f7;border-color:#cba6f7}}
+    QPushButton#clear{{background:#6c7086;border-color:#6c7086}}
+    QPushButton#on{{background:#a6e3a1;border-color:#a6e3a1}}QPushButton#off{{background:#f38ba8;border-color:#f38ba8}}
+    QMessageBox{{background:#1e1e2e}}
+    QMessageBox QLabel{{color:#cdd6f4}}
+    QMessageBox QPushButton{{min-width:80px;padding:8px 16px}}
+    QTabWidget::pane{{border:1px solid #313244;border-radius:4px;background:#1e1e2e}}
+    QTabBar::tab{{background:#181825;color:#6c7086;padding:{tab_pad};border:1px solid #313244;border-bottom:none;border-radius:4px 4px 0 0;margin-right:2px;font-size:{fs_btn}}}
+    QTabBar::tab:selected{{color:#cdd6f4;background:#1e1e2e;border-color:#89b4fa;border-bottom:2px solid #89b4fa}}
+    QTabBar::tab:hover{{color:#bac2de;background:#1e1e2e}}
+    QTextEdit{{background:#11111b;border:1px solid #313244;border-radius:4px;color:#bac2de;font-family:"Consolas",monospace;font-size:12px}}
+    QSpinBox,QDoubleSpinBox,QComboBox{{background:#11111b;border:1px solid #313244;border-radius:4px;padding:4px 8px;color:#cdd6f4;min-height:22px;font-size:{fs_btn}}}
+    QToolBar{{background:#11111b;border-bottom:1px solid #313244;spacing:4px;padding:2px}}
+    QToolBar QToolButton{{background:#1e1e2e;color:#bac2de;border:1px solid #313244;border-radius:4px;padding:4px 10px;font-weight:bold;font-size:{fs_btn}}}
+    QToolBar QToolButton:hover{{background:#313244;color:#cdd6f4;border-color:#45475a}}
+    QToolBar QToolButton:pressed{{background:#45475a}}
+    QStatusBar{{background:#11111b;border-top:1px solid #313244;color:#6c7086;font-size:11px}}
+    QSlider::groove:horizontal{{height:4px;background:#313244;border-radius:2px}}
+    QSlider::handle:horizontal{{width:14px;height:14px;margin:-5px 0;background:#89b4fa;border-radius:7px}}
+    QProgressBar{{border:1px solid #313244;border-radius:4px;text-align:center;color:#cdd6f4}}
+    QProgressBar::chunk{{background:#89b4fa;border-radius:3px}}
+    """
+    
+    LIGHT = f"""
+    QMainWindow,QWidget{{background:#eff1f5;color:#4c4f69;font-family:"Microsoft YaHei","Segoe UI",sans-serif;font-size:{fs}}}
+    QGroupBox{{background:#e6e9ef;border:1px solid #ccd0da;border-radius:8px;margin-top:14px;padding:{gp_pad};font-weight:bold;color:#4c4f69}}
+    QGroupBox::title{{subcontrol-origin:margin;left:10px;padding:0 4px;color:#7c7f93;font-size:{fs_title}}}
+    QLabel{{color:#5c5f77;background:transparent}}
+    QPushButton{{border:none;border-radius:6px;padding:{pad};min-height:{h};font-weight:bold;color:#fff;font-size:{fs_btn}}}
+    QPushButton:hover{{opacity:0.9}}QPushButton:pressed{{padding-top:7px;padding-bottom:5px}}
+    QPushButton:disabled{{background:#ccd0da!important;color:#9ca0b0!important}}
+    QPushButton#conn{{background:#1e66f5}}QPushButton#start{{background:#40a02b}}QPushButton#stop{{background:#d20f39}}
+    QPushButton#test{{background:#ccd0da;color:#5c5f77}}QPushButton#test:checked{{background:#fe640b}}
+    QPushButton#save{{background:#1e66f5}}QPushButton#load{{background:#8839ef}}QPushButton#clear{{background:#7c7f93}}
+    QPushButton#on{{background:#40a02b}}QPushButton#off{{background:#d20f39}}
+    QTabWidget::pane{{border:1px solid #ccd0da}}
+    QTabBar::tab{{background:#e6e9ef;color:#7c7f93;padding:{tab_pad};border:none;border-bottom:2px solid transparent;font-size:{fs_btn}}}
+    QTabBar::tab:selected{{color:#4c4f69;border-bottom:2px solid #1e66f5}}
+    QTextEdit{{background:#fff;background:#eff1f5;border:1px solid #ccd0da;border-radius:4px;color:#5c5f77;font-family:"Consolas",monospace;font-size:12px}}
+    QSpinBox,QDoubleSpinBox,QComboBox{{background:#eff1f5;border:1px solid #ccd0da;border-radius:4px;padding:4px 8px;color:#4c4f69;min-height:22px;font-size:{fs_btn}}}
+    QToolBar{{background:#e6e9ef;border-bottom:1px solid #ccd0da;spacing:4px;padding:2px}}
+    QToolBar QToolButton{{background:#eff1f5;color:#5c5f77;border:1px solid #ccd0da;border-radius:4px;padding:4px 10px;font-weight:bold;font-size:{fs_btn}}}
+    QToolBar QToolButton:hover{{background:#ccd0da;color:#4c4f69;border-color:#bcc0cc}}
+    QToolBar QToolButton:pressed{{background:#bcc0cc}}
+    QStatusBar{{background:#e6e9ef;border-top:1px solid #ccd0da;color:#7c7f93;font-size:11px}}
+    QSlider::groove:horizontal{{height:4px;background:#ccd0da;border-radius:2px}}
+    QSlider::handle:horizontal{{width:14px;height:14px;margin:-5px 0;background:#1e66f5;border-radius:7px}}
+    QProgressBar{{border:1px solid #ccd0da;border-radius:4px;text-align:center;color:#4c4f69}}
+    QProgressBar::chunk{{background:#1e66f5;border-radius:3px}}
+    """
+    return DARK, LIGHT
 
 class Main(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PG-Power | GPIB电源测试工具 v2.0.1")
-        self.resize(1500, 900)
+        # Adaptive window size based on screen resolution
+        screen = QApplication.primaryScreen()
+        if screen:
+            geo = screen.availableGeometry()
+            self.is_low_res = geo.width() < 1280 or geo.height() < 800
+            if self.is_low_res:
+                self.resize(min(geo.width() - 50, 1024), min(geo.height() - 50, 768))
+            else:
+                self.resize(1500, 900)
+        else:
+            self.is_low_res = False
+            self.resize(1500, 900)
         ico = os.path.join(sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)), "icon.ico")
         if os.path.exists(ico): self.setWindowIcon(QIcon(ico))
 
@@ -203,8 +224,16 @@ class Main(QMainWindow):
     def _init_wave(self, parent):
         lay=QHBoxLayout(parent); sp=QSplitter(Qt.Horizontal)
 
-        # Left
-        left=QWidget(); left.setFixedWidth(220); ll=QVBoxLayout(left); ll.setSpacing(4)
+        # Left panel - adaptive width
+        left=QWidget()
+        left_width = 180 if self.is_low_res else 220
+        left.setFixedWidth(left_width)
+        ll=QVBoxLayout(left); ll.setSpacing(2 if self.is_low_res else 4)
+        
+        # Adaptive font sizes
+        fs_big = "14px" if self.is_low_res else "18px"
+        fs_normal = "11px" if self.is_low_res else "13px"
+        fs_small = "10px" if self.is_low_res else "11px"
 
         # Display mode selector
         g0=QGroupBox("显示模式"); gl0=QVBoxLayout(g0)
@@ -214,9 +243,9 @@ class Main(QMainWindow):
 
         # Instant values
         g1=QGroupBox("当前数据"); gl1=QVBoxLayout(g1); gl1.setSpacing(2)
-        self.lb_ic=QLabel("0.000 mA"); self.lb_ic.setStyleSheet("color:#89b4fa;font-size:18px;font-weight:bold")
-        self.lb_iv=QLabel("0.000 V"); self.lb_iv.setStyleSheet("color:#f38ba8;font-size:18px;font-weight:bold")
-        self.lb_ip=QLabel("0.000 mW"); self.lb_ip.setStyleSheet("color:#f9e2af;font-size:18px;font-weight:bold")
+        self.lb_ic=QLabel("0.000 mA"); self.lb_ic.setStyleSheet(f"color:#89b4fa;font-size:{fs_big};font-weight:bold")
+        self.lb_iv=QLabel("0.000 V"); self.lb_iv.setStyleSheet(f"color:#f38ba8;font-size:{fs_big};font-weight:bold")
+        self.lb_ip=QLabel("0.000 mW"); self.lb_ip.setStyleSheet(f"color:#f9e2af;font-size:{fs_big};font-weight:bold")
         gl1.addWidget(self.lb_ic); gl1.addWidget(self.lb_iv); gl1.addWidget(self.lb_ip); ll.addWidget(g1)
 
         # Average
@@ -1033,7 +1062,8 @@ class Main(QMainWindow):
         self.show()
 
     def _toggle_theme(self):
-        themes=[DARK, LIGHT, DARK]
+        dark, light = get_themes(self.is_low_res)
+        themes=[dark, light, dark]
         names=["深色主题","浅色主题","跟随系统"]
         self.theme_idx=(self.theme_idx+1)%3
         self.act_theme.setText(names[self.theme_idx])
@@ -1084,7 +1114,12 @@ class Main(QMainWindow):
         self.collecting=False; g_close(); self._save_settings(); e.accept()
 
 if __name__=="__main__":
-    app=QApplication(sys.argv); app.setStyleSheet(DARK)
+    app=QApplication(sys.argv)
+    # Detect screen resolution for theme
+    screen = app.primaryScreen()
+    is_low_res = screen and (screen.availableGeometry().width() < 1280 or screen.availableGeometry().height() < 800)
+    dark, light = get_themes(is_low_res)
+    app.setStyleSheet(dark)
     ico=os.path.join(sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)),"icon.ico")
     if os.path.exists(ico): app.setWindowIcon(QIcon(ico))
     w=Main(); w.show(); sys.exit(app.exec_())
