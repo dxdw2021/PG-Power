@@ -429,6 +429,7 @@ class Main(QMainWindow):
         self.sel_region=None; self.sel_analysis=None
         self.sel_line=None; self.sel_region_rect=None
         self.analysis_win=None
+        self._resizing=None; self._resize_start_x=None; self._resize_orig=None
         self.user_scrolling=False; self.scroll_timer=QTimer(); self.scroll_timer.setSingleShot(True)
         self.scroll_timer.timeout.connect(lambda: setattr(self,'user_scrolling',False))
 
@@ -516,18 +517,41 @@ class Main(QMainWindow):
             return self.pc
         return None
 
+    def _get_sel_edges(self, plot):
+        """Get selection edges in view coordinates"""
+        if not self.sel_region_rect: return None, None
+        r = self.sel_region_rect.getRegion()
+        return r[0], r[1]
+
+    def _near_edge(self, plot, x, threshold=2.0):
+        """Check if x is near a selection edge, return 'left', 'right', or None"""
+        t0, t1 = self._get_sel_edges(plot)
+        if t0 is None: return None
+        vr = plot.plotItem.vb.viewRange()[0]
+        scale = (vr[1] - vr[0]) / plot.width() if plot.width() > 0 else 1
+        thr = threshold * scale
+        if abs(x - t0) < thr: return 'left'
+        if abs(x - t1) < thr: return 'right'
+        return None
+
     def mousePressEvent(self, event):
         if event.button()==Qt.LeftButton and (self.btn_region.isChecked() or self.act_region.text()=="选区分析:开"):
             pos=event.pos()
             plot=self._get_active_plot()
             if plot:
-                # Map from main window coordinates to scene coordinates
                 scene_pos = plot.mapFromGlobal(self.mapToGlobal(pos))
-                # Check if scene position is within plot bounds
                 if plot.plotItem.vb.sceneBoundingRect().contains(scene_pos):
                     mp=plot.plotItem.vb.mapSceneToView(scene_pos)
+                    # Check if clicking near an existing edge to resize
+                    if self.sel_region_rect:
+                        edge = self._near_edge(plot, mp.x())
+                        if edge:
+                            self._resizing = edge
+                            self._resize_start_x = mp.x()
+                            self._resize_orig = self.sel_region_rect.getRegion()
+                            return
+                    # Start new selection
                     if self.sel_start is None:
-                        # Auto-clear old selection before creating new one
                         self._clear_selection()
                         self.sel_start=mp.x()
                         self.statusBar().showMessage(f"已选择起点: {mp.x():.1f}s，请点击终点")
@@ -538,6 +562,51 @@ class Main(QMainWindow):
                         self._draw_sel_region(plot, t0,t1)
                         self._show_analysis(t0,t1)
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        # Handle resize of selection region
+        if getattr(self, '_resizing', None):
+            pos = event.pos()
+            plot = self._get_active_plot()
+            if plot:
+                scene_pos = plot.mapFromGlobal(self.mapToGlobal(pos))
+                if plot.plotItem.vb.sceneBoundingRect().contains(scene_pos):
+                    mp = plot.plotItem.vb.mapSceneToView(scene_pos)
+                    t0, t1 = self._resize_orig
+                    if self._resizing == 'left':
+                        t0 = min(mp.x(), t1 - 0.1)
+                    else:
+                        t1 = max(mp.x(), t0 + 0.1)
+                    self.sel_region_rect.setRegion([t0, t1])
+            # Update cursor based on hover position
+        else:
+            # Update cursor when hovering near edges
+            pos = event.pos()
+            plot = self._get_active_plot()
+            if plot and self.sel_region_rect:
+                scene_pos = plot.mapFromGlobal(self.mapToGlobal(pos))
+                if plot.plotItem.vb.sceneBoundingRect().contains(scene_pos):
+                    mp = plot.plotItem.vb.mapSceneToView(scene_pos)
+                    edge = self._near_edge(plot, mp.x())
+                    if edge:
+                        self.setCursor(Qt.SizeHorCursor)
+                    else:
+                        self.setCursor(Qt.ArrowCursor)
+                else:
+                    self.setCursor(Qt.ArrowCursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if getattr(self, '_resizing', None):
+            self._resizing = None
+            self.setCursor(Qt.ArrowCursor)
+            # Update analysis with new region
+            if self.sel_region_rect:
+                r = self.sel_region_rect.getRegion()
+                self._show_analysis(r[0], r[1])
+        super().mouseReleaseEvent(event)
 
     def _draw_sel_line(self, plot, x):
         """Draw start marker line"""
