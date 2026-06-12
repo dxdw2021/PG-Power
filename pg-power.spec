@@ -46,8 +46,12 @@ for f in os.listdir(pyqt5_dir):
 ni4882_dll = os.path.join(PROJECT_DIR, 'ni4882.dll')
 ni4882_datas = [(ni4882_dll, '.')] if os.path.exists(ni4882_dll) else []
 
+# icon.ico
+icon_ico = os.path.join(PROJECT_DIR, 'icon.ico')
+icon_datas = [(icon_ico, '.')] if os.path.exists(icon_ico) else []
+
 # 合并所有 data
-all_datas = qt_datas + pyd_datas + ni4882_datas
+all_datas = qt_datas + pyd_datas + ni4882_datas + icon_datas
 all_binaries = qt_binaries
 
 # ---------- 配置 Analysis ----------
@@ -126,5 +130,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=os.path.join(PROJECT_DIR, 'icon.ico'),
 )

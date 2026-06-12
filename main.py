@@ -3,8 +3,15 @@ from datetime import datetime
 from ctypes import c_int, c_char_p, create_string_buffer
 
 # ===== Log =====
-log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+# Use EXE directory for logs in frozen mode, script directory otherwise
+if getattr(sys, 'frozen', False):
+    log_dir = os.path.join(os.path.dirname(sys.executable), "logs")
+    screenshot_dir = os.path.join(os.path.dirname(sys.executable), "screenshots")
+else:
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    screenshot_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
 os.makedirs(log_dir, exist_ok=True)
+os.makedirs(screenshot_dir, exist_ok=True)
 log_file = os.path.join(log_dir, f"pg_power_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.FileHandler(log_file, encoding='utf-8'), logging.StreamHandler(sys.stdout)])
@@ -25,7 +32,7 @@ if not getattr(sys, 'frozen', False):
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QGroupBox, QMessageBox, QFileDialog,
     QTabWidget, QTextEdit, QSplitter, QFrame, QToolBar, QAction, QComboBox, QGridLayout,
-    QSlider, QStatusBar, QProgressBar)
+    QSlider, QStatusBar, QProgressBar, QLineEdit)
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QSettings
 from PyQt5.QtGui import QIcon
 import pyqtgraph as pg
@@ -51,10 +58,10 @@ if dll:
         GPIB_OK = True; logger.info("GPIB OK")
     except Exception as e: logger.warning(f"GPIB: {e}")
 
-def g_open(a):
+def g_open(board, addr):
     global gpib_ud
     if not GPIB_OK: return False
-    gpib_ud = ni4882.ibdev(0, a, 0, 13, 1, 0); return gpib_ud >= 0
+    gpib_ud = ni4882.ibdev(board, addr, 0, 13, 1, 0); return gpib_ud >= 0
 def g_close():
     global gpib_ud
     if GPIB_OK and gpib_ud >= 0: ni4882.ibonl(gpib_ud, 0); gpib_ud = -1
@@ -131,9 +138,9 @@ QProgressBar::chunk{background:#1e66f5;border-radius:3px}
 class Main(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PG-Power | GPIB电源测试工具 v2.0")
+        self.setWindowTitle("PG-Power | GPIB电源测试工具 v2.0.1")
         self.resize(1500, 900)
-        ico = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+        ico = os.path.join(sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)), "icon.ico")
         if os.path.exists(ico): self.setWindowIcon(QIcon(ico))
 
         # Data
@@ -178,6 +185,8 @@ class Main(QMainWindow):
         self.act_theme=QAction("深色主题",self); self.act_theme.triggered.connect(self._toggle_theme); tb.addAction(self.act_theme)
         # Region analysis toggle
         self.act_region=QAction("选区分析:关",self); self.act_region.triggered.connect(self._toggle_region_tb); tb.addAction(self.act_region)
+        # Screenshot
+        self.act_screenshot=QAction("截图",self); self.act_screenshot.triggered.connect(self._screenshot); tb.addAction(self.act_screenshot)
 
         tabs=QTabWidget(); self.setCentralWidget(tabs)
         w1=QWidget(); tabs.addTab(w1,"数据与波形")
@@ -231,12 +240,8 @@ class Main(QMainWindow):
         gl3.addWidget(self.lb_ah); gl3.addWidget(self.lb_tm); gl3.addWidget(self.lb_n)
         gl3.addWidget(self.btn_unit); ll.addWidget(g3)
 
-        # GPIB
-        g4=QGroupBox("GPIB控制"); gl4=QVBoxLayout(g4); gl4.setSpacing(2)
-        self.spin_a=QSpinBox(); self.spin_a.setRange(0,30); self.spin_a.setValue(5)
-        gl4.addWidget(QLabel("设备地址:")); gl4.addWidget(self.spin_a)
-        self.btn_co=QPushButton("连接设备"); self.btn_co.setObjectName("conn")
-        self.btn_co.clicked.connect(self._connect); gl4.addWidget(self.btn_co)
+        # 采集控制
+        g4=QGroupBox("采集控制"); gl4=QVBoxLayout(g4); gl4.setSpacing(2)
         self.btn_te=QPushButton("测试模式"); self.btn_te.setObjectName("test")
         self.btn_te.setCheckable(True); self.btn_te.clicked.connect(self._toggle_test); gl4.addWidget(self.btn_te)
         self.btn_st=QPushButton("开始采集"); self.btn_st.setObjectName("start")
@@ -260,6 +265,7 @@ class Main(QMainWindow):
         self.pm=pg.PlotWidget(); self.pm.setBackground("#11111b"); self.pm.showGrid(x=True,y=True,alpha=0.1)
         self.pm.setLabel("left","电流 (mA)",color="#89b4fa"); self.pm.setLabel("bottom","时间 (s)",color="#6c7086")
         self.pm.setTitle("电压 / 电流 波形",color="#cdd6f4",size="12pt")
+        self._cn_menu(self.pm)
         # Right axis for voltage
         self.pm.showAxis('right')
         self.pm.plotItem.getAxis('right').setLabel("电压 (V)",color="#f38ba8")
@@ -275,16 +281,22 @@ class Main(QMainWindow):
         self.pm.addLegend(offset=(-10,10))
         # Sync ViewBoxes - defer initial sync
         self.pm.plotItem.vb.sigResized.connect(self._sync_vb)
+        # Current indicator line (horizontal, movable, will be repositioned)
+        self.tc_m=pg.InfiniteLine(angle=0,movable=False,pen=pg.mkPen("#89b4fa",width=1,style=Qt.DotLine))
+        self.pm.addItem(self.tc_m, ignoreBounds=True)
+        # Voltage indicator line (horizontal, mapped Y)
+        self.tvl_m=pg.InfiniteLine(angle=0,movable=False,pen=pg.mkPen("#f38ba8",width=1,style=Qt.DotLine))
+        self.pm.addItem(self.tvl_m, ignoreBounds=True)
         self.vm=pg.InfiniteLine(90,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.hm=pg.InfiniteLine(0,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.pm.addItem(self.vm,ignoreBounds=True); self.pm.addItem(self.hm,ignoreBounds=True)
         self.xm=pg.TextItem(color="#cdd6f4",anchor=(0,1),border=pg.mkPen("#585b70",width=1),fill=pg.mkBrush("#1e1e2eee"))
         self.xm.hide(); self.pm.addItem(self.xm)
-        # Real-time labels for merged mode
+        # Real-time labels for merged mode (added to scene to avoid clipping)
         self.lmc=pg.TextItem(color="#89b4fa",anchor=(0,0.5),fill=pg.mkBrush("#11111bcc"))
-        self.pm.addItem(self.lmc)
+        self.pm.scene().addItem(self.lmc)
         self.lmv=pg.TextItem(color="#f38ba8",anchor=(1,0.5),fill=pg.mkBrush("#11111bcc"))
-        self.pm.addItem(self.lmv)
+        self.pm.scene().addItem(self.lmv)
         self.pm.scene().sigMouseMoved.connect(self._mm)
         self.pm.hide()
         ml.addWidget(self.pm)
@@ -293,6 +305,7 @@ class Main(QMainWindow):
         self.pc=pg.PlotWidget(); self.pc.setBackground("#11111b"); self.pc.showGrid(x=True,y=True,alpha=0.1)
         self.pc.setLabel("left","电流 (mA)",color="#6c7086"); self.pc.setLabel("bottom","时间 (s)",color="#6c7086")
         self.pc.setTitle("电流波形",color="#cdd6f4",size="12pt")
+        self._cn_menu(self.pc)
         self.cc=self.pc.plot(pen=pg.mkPen("#89b4fa",width=2),fillLevel=0,brush=pg.mkBrush(137,180,250,40))
         self.vc=pg.InfiniteLine(90,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.hc=pg.InfiniteLine(0,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
@@ -300,8 +313,9 @@ class Main(QMainWindow):
         self.xc=pg.TextItem(color="#cdd6f4",anchor=(0,1),border=pg.mkPen("#585b70",width=1),fill=pg.mkBrush("#1e1e2eee"))
         self.xc.hide(); self.pc.addItem(self.xc)
         self.lc=pg.TextItem(color="#89b4fa",anchor=(0,0.5),fill=pg.mkBrush("#11111bcc"))
-        self.pc.addItem(self.lc)
-        self.tc=self.pc.plot(pen=pg.mkPen("#89b4fa",width=1,style=Qt.DotLine))
+        self.pc.scene().addItem(self.lc)
+        self.tc=pg.InfiniteLine(angle=0,movable=False,pen=pg.mkPen("#89b4fa",width=1,style=Qt.DotLine))
+        self.pc.addItem(self.tc, ignoreBounds=True)
         self.pc.scene().sigMouseMoved.connect(self._mc)
         ml.addWidget(self.pc)
 
@@ -309,6 +323,7 @@ class Main(QMainWindow):
         self.pv=pg.PlotWidget(); self.pv.setBackground("#11111b"); self.pv.showGrid(x=True,y=True,alpha=0.1)
         self.pv.setLabel("left","电压 (V)",color="#6c7086"); self.pv.setLabel("bottom","时间 (s)",color="#6c7086")
         self.pv.setTitle("电压波形",color="#cdd6f4",size="12pt")
+        self._cn_menu(self.pv)
         self.cv=self.pv.plot(pen=pg.mkPen("#f38ba8",width=2))
         self.vvl=pg.InfiniteLine(90,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.hvl=pg.InfiniteLine(0,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
@@ -316,8 +331,9 @@ class Main(QMainWindow):
         self.xvl=pg.TextItem(color="#cdd6f4",anchor=(0,1),border=pg.mkPen("#585b70",width=1),fill=pg.mkBrush("#1e1e2eee"))
         self.xvl.hide(); self.pv.addItem(self.xvl)
         self.lvl=pg.TextItem(color="#f38ba8",anchor=(0,0.5),fill=pg.mkBrush("#11111bcc"))
-        self.pv.addItem(self.lvl)
-        self.tvl=self.pv.plot(pen=pg.mkPen("#f38ba8",width=1,style=Qt.DotLine))
+        self.pv.scene().addItem(self.lvl)
+        self.tvl=pg.InfiniteLine(angle=0,movable=False,pen=pg.mkPen("#f38ba8",width=1,style=Qt.DotLine))
+        self.pv.addItem(self.tvl, ignoreBounds=True)
         self.pv.scene().sigMouseMoved.connect(self._mv)
         ml.addWidget(self.pv)
 
@@ -329,6 +345,7 @@ class Main(QMainWindow):
         # Selection state
         self.sel_active=False; self.sel_start=None; self.sel_rect=None
         self.sel_region=None; self.sel_analysis=None
+        self.sel_line=None; self.sel_region_rect=None
         self.user_scrolling=False; self.scroll_timer=QTimer(); self.scroll_timer.setSingleShot(True)
         self.scroll_timer.timeout.connect(lambda: setattr(self,'user_scrolling',False))
 
@@ -337,143 +354,331 @@ class Main(QMainWindow):
     def _sync_vb(self):
         self.pm_vb2.setGeometry(self.pm.plotItem.vb.sceneBoundingRect())
 
-    # ===== Crosshair =====
+    def _mm(self, pos):
+        if self.pm.sceneBoundingRect().contains(pos):
+            mp = self.pm.plotItem.vb.mapSceneToView(pos)
+            self.vm.setPos(mp.x()); self.hm.setPos(mp.y())
+            if self.ts:
+                i = max(0, min(int(mp.x()), len(self.ts) - 1))
+                v, c, p = self.vs[i], self.cs[i], self.ps[i]
+                self.xm.setText(f" t={mp.x():.1f}s  {v:.3f}V  {c:.1f}mA  {p:.1f}mW ")
+                self.xm.setPos(mp); self.xm.show()
+        else:
+            self.xm.hide()
+
     def _mc(self, pos):
         if self.pc.sceneBoundingRect().contains(pos):
-            mp=self.pc.plotItem.vb.mapSceneToView(pos)
+            mp = self.pc.plotItem.vb.mapSceneToView(pos)
             self.vc.setPos(mp.x()); self.hc.setPos(mp.y())
-            with lock:
-                if self.ts:
-                    i=max(0,min(int(mp.x()),len(self.ts)-1))
-                    v,c,p=self.vs[i],self.cs[i],self.ps[i]
-                    self.xc.setText(f" t={mp.x():.1f}s  {v:.3f}V  {c:.1f}mA  {p:.1f}mW ")
-                    self.xc.setPos(mp); self.xc.show()
-        else: self.xc.hide()
+            if self.ts:
+                i = max(0, min(int(mp.x()), len(self.ts) - 1))
+                v, c, p = self.vs[i], self.cs[i], self.ps[i]
+                self.xc.setText(f" t={mp.x():.1f}s  {v:.3f}V  {c:.1f}mA  {p:.1f}mW ")
+                self.xc.setPos(mp); self.xc.show()
+        else:
+            self.xc.hide()
 
     def _mv(self, pos):
         if self.pv.sceneBoundingRect().contains(pos):
-            mp=self.pv.plotItem.vb.mapSceneToView(pos)
+            mp = self.pv.plotItem.vb.mapSceneToView(pos)
             self.vvl.setPos(mp.x()); self.hvl.setPos(mp.y())
-            with lock:
-                if self.ts:
-                    i=max(0,min(int(mp.x()),len(self.ts)-1))
-                    self.xvl.setText(f" t={mp.x():.1f}s  {self.vs[i]:.3f}V ")
-                    self.xvl.setPos(mp); self.xvl.show()
-        else: self.xvl.hide()
+            if self.ts:
+                i = max(0, min(int(mp.x()), len(self.ts) - 1))
+                v = self.vs[i]
+                self.xvl.setText(f" t={mp.x():.1f}s  {v:.3f}V ")
+                self.xvl.setPos(mp); self.xvl.show()
+        else:
+            self.xvl.hide()
 
-    def _mm(self, pos):
-        if self.pm.sceneBoundingRect().contains(pos):
-            mp=self.pm.plotItem.vb.mapSceneToView(pos)
-            self.vm.setPos(mp.x()); self.hm.setPos(mp.y())
-            with lock:
-                if self.ts:
-                    i=max(0,min(int(mp.x()),len(self.ts)-1))
-                    v,c,p=self.vs[i],self.cs[i],self.ps[i]
-                    self.xm.setText(f" t={mp.x():.1f}s  {v:.3f}V  {c:.1f}mA  {p:.1f}mW ")
-                    self.xm.setPos(mp); self.xm.show()
-        else: self.xm.hide()
+    def _cn_menu(self, pw):
+        """设置PlotWidget右键菜单为中文"""
+        from PyQt5.QtWidgets import QMenu
+        menu = QMenu()
+        menu.setStyleSheet("QMenu{background:#1e1e2e;color:#cdd6f4;border:1px solid #313244;}QMenu::item:selected{background:#313244;}")
+        menu.addAction("平移模式", lambda: pw.plotItem.vb.setMouseMode(pg.ViewBox.PanMode))
+        menu.addAction("框选模式", lambda: pw.plotItem.vb.setMouseMode(pg.ViewBox.RectMode))
+        pw.plotItem.vb.menu = menu
+
+    def _get_active_plot(self):
+        """获取当前活动的绘图控件"""
+        if self.pm.isVisible():
+            return self.pm
+        elif self.pc.isVisible():
+            return self.pc
+        return None
 
     def mousePressEvent(self, event):
-        if event.button()==Qt.RightButton and (self.btn_region.isChecked() or self.act_region.text()=="选区分析:开"):
+        if event.button()==Qt.LeftButton and (self.btn_region.isChecked() or self.act_region.text()=="选区分析:开"):
             pos=event.pos()
-            if self.pm.isVisible():
-                if self.pm.sceneBoundingRect().contains(pos):
-                    mp=self.pm.plotItem.vb.mapSceneToView(pos)
-                    self.sel_start=mp.x(); self.sel_active=True
-            elif self.pc.isVisible():
-                if self.pc.sceneBoundingRect().contains(pos):
-                    mp=self.pc.plotItem.vb.mapSceneToView(pos)
-                    self.sel_start=mp.x(); self.sel_active=True
+            plot=self._get_active_plot()
+            if plot and plot.sceneBoundingRect().contains(pos):
+                mp=plot.plotItem.vb.mapSceneToView(pos)
+                if self.sel_start is None:
+                    self.sel_start=mp.x()
+                    self.statusBar().showMessage(f"已选择起点: {mp.x():.1f}s，请点击终点")
+                    self._draw_sel_line(plot, mp.x())
+                else:
+                    t0=min(self.sel_start,mp.x()); t1=max(self.sel_start,mp.x())
+                    self.sel_start=None
+                    self._draw_sel_region(plot, t0,t1)
+                    self._show_analysis(t0,t1)
         super().mousePressEvent(event)
 
-    def mouseReleaseEvent(self, event):
-        if event.button()==Qt.RightButton and self.sel_active:
-            self.sel_active=False
-            pos=event.pos()
-            if self.pm.isVisible() and self.pm.sceneBoundingRect().contains(pos):
-                mp=self.pm.plotItem.vb.mapSceneToView(pos)
-                self._show_analysis(min(self.sel_start,mp.x()),max(self.sel_start,mp.x()))
-            elif self.pc.isVisible() and self.pc.sceneBoundingRect().contains(pos):
-                mp=self.pc.plotItem.vb.mapSceneToView(pos)
-                self._show_analysis(min(self.sel_start,mp.x()),max(self.sel_start,mp.x()))
-        super().mouseReleaseEvent(event)
+    def _draw_sel_line(self, plot, x):
+        """Draw start marker line"""
+        if self.sel_line:
+            try: plot.removeItem(self.sel_line)
+            except: pass
+        self.sel_line = pg.InfiniteLine(angle=90, movable=False, 
+            pen=pg.mkPen(color="#4a9eff", width=2, style=Qt.DashLine))
+        plot.addItem(self.sel_line)
+        self.sel_line.setPos(x)
+
+    def _draw_sel_region(self, plot, t0, t1):
+        """Draw selection region rectangle"""
+        if self.sel_line:
+            try: plot.removeItem(self.sel_line)
+            except: pass
+            self.sel_line = None
+        if self.sel_region_rect:
+            try: plot.removeItem(self.sel_region_rect)
+            except: pass
+        self.sel_region_rect = pg.LinearRegionItem([t0, t1], movable=False,
+            brush=pg.mkBrush(74, 158, 255, 50), pen=pg.mkPen(color="#4a9eff", width=1))
+        plot.addItem(self.sel_region_rect)
 
     def _show_analysis(self,t0,t1):
-        if not self.ts or t1-t0<1: return
+        if not self.ts or t1-t0<0.5: 
+            self.statusBar().showMessage("选区太小，请重新选择")
+            return
         idx=[i for i,t in enumerate(self.ts) if t0<=t<=t1]
-        if len(idx)<2: return
+        if len(idx)<2:
+            self.statusBar().showMessage("选区内数据不足")
+            return
         vr=[self.vs[i] for i in idx]; cr=[self.cs[i] for i in idx]; pr=[self.ps[i] for i in idx]
         dt=self.ts[idx[-1]]-self.ts[idx[0]]
-        self.rv.setText(f"平均电压: {sum(vr)/len(vr):.4f} V")
-        self.rc.setText(f"平均电流: {sum(cr)/len(cr):.4f} mA")
-        self.rp.setText(f"平均功率: {sum(pr)/len(pr):.4f} mW")
+        avg_v=sum(vr)/len(vr); avg_c=sum(cr)/len(cr); avg_p=sum(pr)/len(pr)
+        charge=sum(cr)/len(cr)*dt/3600*1000
+        energy=sum(pr)/len(pr)*dt/3600
+
+        # Update tab analysis
+        self.rv.setText(f"平均电压: {avg_v:.4f} V")
+        self.rc.setText(f"平均电流: {avg_c:.4f} mA")
+        self.rp.setText(f"平均功率: {avg_p:.4f} mW")
         self.rmx.setText(f"最大电流: {max(cr):.4f} mA")
         self.rmn.setText(f"最小电流: {min(cr):.4f} mA")
-        self.rch.setText(f"电量(μAh): {sum(cr)/len(cr)*dt/3600*1000:.4f}")
-        self.ren.setText(f"能量(μWh): {sum(pr)/len(pr)*dt/3600:.4f}")
+        self.rch.setText(f"电量(μAh): {charge:.4f}")
+        self.ren.setText(f"能量(μWh): {energy:.4f}")
         self.rtm.setText(f"时长: {dt:.2f} 秒")
         self.rn.setText(f"采样点数: {len(idx)}")
-        QMessageBox.information(self,"选区分析",f"选区 {t0:.1f}s ~ {t1:.1f}s 分析结果已显示在选区分析标签页")
+
+        # Show floating analysis window
+        self._show_floating_analysis(t0, t1, avg_v, avg_c, avg_p, charge, energy, dt, len(idx))
+        self.statusBar().showMessage(f"选区分析: {t0:.1f}s ~ {t1:.1f}s | 平均功率: {avg_p:.1f}mW | 能量: {energy:.2f}μWh")
+
+    def _show_floating_analysis(self, t0, t1, avg_v, avg_c, avg_p, charge, energy, dt, count):
+        """Show floating analysis window near the selection"""
+        if hasattr(self, 'floating_tip') and self.floating_tip:
+            self.floating_tip.close()
+        
+        self.floating_tip = QWidget(self)
+        self.floating_tip.setStyleSheet("""
+            QWidget {
+                background-color: rgba(30, 30, 46, 230);
+                border: 1px solid #89b4fa;
+                border-radius: 8px;
+            }
+            QLabel {
+                color: #cdd6f4;
+                font-size: 12px;
+                padding: 2px 8px;
+                background: transparent;
+            }
+            QLabel#title {
+                color: #89b4fa;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 4px 8px;
+            }
+            QLabel#value {
+                color: #a6e3a1;
+                font-weight: bold;
+            }
+        """)
+        
+        layout = QVBoxLayout(self.floating_tip)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
+        
+        title = QLabel(f"选区分析 ({t0:.1f}s ~ {t1:.1f}s)")
+        title.setObjectName("title")
+        layout.addWidget(title)
+        
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: #45475a;")
+        layout.addWidget(sep)
+        
+        # Stats
+        stats = [
+            (f"平均电压: {avg_v:.3f} V", "#ff6b6b"),
+            (f"平均电流: {avg_c:.1f} mA", "#89b4fa"),
+            (f"平均功率: {avg_p:.1f} mW", "#a6e3a1"),
+            (f"电量: {charge:.2f} μAh", "#f9e2af"),
+            (f"能量: {energy:.2f} μWh", "#cba6f7"),
+            (f"时长: {dt:.2f} 秒 | {count}点", "#89dceb"),
+        ]
+        
+        for text, color in stats:
+            lbl = QLabel(text)
+            lbl.setStyleSheet(f"color: {color}; font-size: 12px; padding: 1px 4px;")
+            layout.addWidget(lbl)
+        
+        self.floating_tip.adjustSize()
+        
+        # Position near the selection region on the chart
+        plot=self._get_active_plot()
+        if plot:
+            mid_x = (t0 + t1) / 2
+            y_range = plot.plotItem.vb.viewRange()[1]
+            mid_y = (y_range[0] + y_range[1]) / 2
+            scene_pos = plot.plotItem.vb.mapViewToScene(pg.Point(mid_x, mid_y))
+            tab_pos = self.tab_wave.mapFromGlobal(self.mapToGlobal(scene_pos.toPoint()))
+            self.floating_tip.move(tab_pos.x() + 20, tab_pos.y() - 100)
+        
+        self.floating_tip.show()
+        self.floating_tip.raise_()
 
     # ===== Tab2: Settings =====
     def _init_settings(self, parent):
-        lay=QVBoxLayout(parent); lay.setSpacing(8)
+        lay=QVBoxLayout(parent); lay.setSpacing(12); lay.setContentsMargins(16,12,16,12)
 
-        # Row 1: Coord + Track + Region (horizontal)
-        row1=QHBoxLayout()
-        # Coord mode
-        g=QGroupBox("坐标设置"); gl=QGridLayout(g); gl.setSpacing(4)
-        self.cb_coord=QComboBox(); self.cb_coord.addItems(["自适应坐标","固定最大值坐标","对数坐标"])
-        self.cb_coord.currentIndexChanged.connect(lambda i: setattr(self,'coord_mode',i))
-        gl.addWidget(QLabel("模式:"),0,0); gl.addWidget(self.cb_coord,0,1)
-        self.chk_auto=QPushButton("自动适应"); self.chk_auto.setCheckable(True)
-        self.chk_auto.setChecked(True); self.chk_auto.clicked.connect(self._auto_adapt)
-        gl.addWidget(self.chk_auto,1,0,1,2)
-        row1.addWidget(g)
-        # Track
-        gt=QGroupBox("跟踪线"); tl=QGridLayout(gt); tl.setSpacing(4)
-        tl.addWidget(QLabel("位置:"),0,0)
-        self.btn_tl=QPushButton("左"); self.btn_tl.clicked.connect(lambda:self._ts("left"))
-        self.btn_tr=QPushButton("右"); self.btn_tr.setObjectName("conn"); self.btn_tr.clicked.connect(lambda:self._ts("right"))
-        tl.addWidget(self.btn_tl,0,1); tl.addWidget(self.btn_tr,0,2)
-        row1.addWidget(gt)
-        # Region
-        ga=QGroupBox("选区分析"); al=QVBoxLayout(ga); al.setSpacing(4)
-        self.btn_region=QPushButton("开启选区"); self.btn_region.setObjectName("test")
-        self.btn_region.setCheckable(True); self.btn_region.clicked.connect(self._toggle_region)
-        al.addWidget(self.btn_region)
-        row1.addWidget(ga)
-        lay.addLayout(row1)
+        # === GPIB连接控制 ===
+        g_gpi=QGroupBox("GPIB连接控制")
+        gpi_lay=QGridLayout(g_gpi); gpi_lay.setSpacing(8)
+        gpi_lay.addWidget(QLabel("电源型号:"),0,0)
+        self.cb_power=QComboBox(); self.cb_power.setEditable(True); self.cb_power.addItems(["66309D","66312D","66321D","66332A","66342A"])
+        self.cb_power.setCurrentText("663XX")
+        gpi_lay.addWidget(self.cb_power,0,1)
+        gpi_lay.addWidget(QLabel("GPIB板卡:"),0,2)
+        self.spin_board=QSpinBox(); self.spin_board.setRange(0,30); self.spin_board.setValue(0)
+        gpi_lay.addWidget(self.spin_board,0,3)
+        gpi_lay.addWidget(QLabel("设备地址:"),1,0)
+        self.spin_a=QSpinBox(); self.spin_a.setRange(0,30); self.spin_a.setValue(5)
+        gpi_lay.addWidget(self.spin_a,1,1)
+        self.btn_co=QPushButton("连接设备"); self.btn_co.setObjectName("conn")
+        self.btn_co.clicked.connect(self._connect); gpi_lay.addWidget(self.btn_co,1,2)
+        lay.addWidget(g_gpi)
 
-        # Row 2: Output (horizontal)
-        go=QGroupBox("设备输出"); ol=QGridLayout(go); ol.setSpacing(4)
-        ol.addWidget(QLabel("最大电压(V):"),0,0); self.sv=QDoubleSpinBox(); self.sv.setRange(0,5); self.sv.setSingleStep(0.001); self.sv.setValue(4.2); ol.addWidget(self.sv,0,1)
-        ol.addWidget(QLabel("最大电流(mA):"),0,2); self.sc=QDoubleSpinBox(); self.sc.setRange(0,2000); self.sc.setValue(1000); ol.addWidget(self.sc,0,3)
+        # === Row 1: 设备输出控制 ===
+        go=QGroupBox("设备输出控制")
+        go_lay=QGridLayout(go); go_lay.setSpacing(8); go_lay.setColumnStretch(1,1); go_lay.setColumnStretch(3,1)
+        go_lay.addWidget(QLabel("最大电压(V):"),0,0)
+        self.sv=QDoubleSpinBox(); self.sv.setRange(0,5); self.sv.setSingleStep(0.001); self.sv.setValue(4.2)
+        go_lay.addWidget(self.sv,0,1)
+        go_lay.addWidget(QLabel("最大电流(mA):"),0,2)
+        self.sc=QDoubleSpinBox(); self.sc.setRange(0,2000); self.sc.setValue(1000)
+        go_lay.addWidget(self.sc,0,3)
+        btn_row=QHBoxLayout(); btn_row.setSpacing(8)
         self.btn_on=QPushButton("开启输出"); self.btn_on.setObjectName("on"); self.btn_on.clicked.connect(lambda: g_send("OUTP ON"))
         self.btn_off=QPushButton("关闭输出"); self.btn_off.setObjectName("off"); self.btn_off.clicked.connect(lambda: g_send("OUTP OFF"))
         ba=QPushButton("应用设置"); ba.clicked.connect(self._apply)
-        ol.addWidget(self.btn_on,1,0); ol.addWidget(self.btn_off,1,1); ol.addWidget(ba,1,2)
+        btn_row.addWidget(self.btn_on); btn_row.addWidget(self.btn_off); btn_row.addWidget(ba); btn_row.addStretch()
+        go_lay.addLayout(btn_row,1,0,1,4)
         lay.addWidget(go)
 
-        # Row 3: Scale + Cache + Line (horizontal)
-        row3=QHBoxLayout()
-        # Scale
-        gv=QGroupBox("刻度设置"); vl=QGridLayout(gv); vl.setSpacing(4)
-        vl.addWidget(QLabel("电流(mA):"),0,0); self.spin_cmin=QDoubleSpinBox(); self.spin_cmin.setRange(-1000,1000); self.spin_cmin.setValue(0); self.spin_cmin.setSingleStep(10); vl.addWidget(self.spin_cmin,0,1)
-        vl.addWidget(QLabel("~"),0,2); self.spin_cmax=QDoubleSpinBox(); self.spin_cmax.setRange(1,10000); self.spin_cmax.setValue(350); self.spin_cmax.setSingleStep(10); vl.addWidget(self.spin_cmax,0,3)
-        vl.addWidget(QLabel("电压(V):"),1,0); self.spin_vmin=QDoubleSpinBox(); self.spin_vmin.setRange(-10,10); self.spin_vmin.setValue(0); self.spin_vmin.setSingleStep(0.5); vl.addWidget(self.spin_vmin,1,1)
-        vl.addWidget(QLabel("~"),1,2); self.spin_vmax=QDoubleSpinBox(); self.spin_vmax.setRange(0.1,100); self.spin_vmax.setValue(20); self.spin_vmax.setSingleStep(1); vl.addWidget(self.spin_vmax,1,3)
-        row3.addWidget(gv)
-        # Cache
-        gc=QGroupBox("数据缓存"); cl=QGridLayout(gc); cl.setSpacing(4)
-        cl.addWidget(QLabel("自动保存阈值:"),0,0); self.spin_cache=QSpinBox(); self.spin_cache.setRange(10000,1000000); self.spin_cache.setValue(50000); self.spin_cache.setSingleStep(10000); cl.addWidget(self.spin_cache,0,1)
-        cl.addWidget(QLabel("点"),0,2)
-        row3.addWidget(gc)
-        # Line width
-        glw=QGroupBox("曲线样式"); lw=QGridLayout(glw); lw.setSpacing(4)
-        lw.addWidget(QLabel("线条粗细:"),0,0); self.spin_lw=QDoubleSpinBox(); self.spin_lw.setRange(0.5,10); self.spin_lw.setValue(2); self.spin_lw.setSingleStep(0.5); self.spin_lw.setSuffix(" px"); lw.addWidget(self.spin_lw,0,1)
-        row3.addWidget(glw)
-        lay.addLayout(row3)
+        # === Row 2: 显示设置 (两列) ===
+        display_row=QHBoxLayout(); display_row.setSpacing(12)
+
+        # 左列：坐标与跟踪
+        left_col=QVBoxLayout(); left_col.setSpacing(8)
+        g1=QGroupBox("坐标与跟踪")
+        g1_lay=QGridLayout(g1); g1_lay.setSpacing(6)
+        g1_lay.addWidget(QLabel("坐标模式:"),0,0)
+        self.cb_coord=QComboBox(); self.cb_coord.addItems(["自适应坐标","固定最大值坐标","对数坐标"])
+        self.cb_coord.currentIndexChanged.connect(lambda i: setattr(self,'coord_mode',i))
+        g1_lay.addWidget(self.cb_coord,0,1)
+        self.chk_auto=QPushButton("自动适应"); self.chk_auto.setCheckable(True)
+        self.chk_auto.setChecked(True); self.chk_auto.clicked.connect(self._auto_adapt)
+        g1_lay.addWidget(self.chk_auto,0,2)
+        g1_lay.addWidget(QLabel("跟踪线位置:"),1,0)
+        self.btn_tl=QPushButton("左侧"); self.btn_tl.clicked.connect(lambda:self._ts("left"))
+        self.btn_tr=QPushButton("右侧"); self.btn_tr.setObjectName("conn"); self.btn_tr.clicked.connect(lambda:self._ts("right"))
+        g1_lay.addWidget(self.btn_tl,1,1); g1_lay.addWidget(self.btn_tr,1,2)
+        left_col.addWidget(g1)
+
+        # 选区分析
+        g2=QGroupBox("选区分析")
+        g2_lay=QVBoxLayout(g2); g2_lay.setSpacing(4)
+        self.btn_region=QPushButton("开启选区分析"); self.btn_region.setObjectName("test")
+        self.btn_region.setCheckable(True); self.btn_region.clicked.connect(self._toggle_region)
+        g2_lay.addWidget(self.btn_region)
+        left_col.addWidget(g2)
+        left_col.addStretch()
+        display_row.addLayout(left_col)
+
+        # 右列：刻度与样式
+        right_col=QVBoxLayout(); right_col.setSpacing(8)
+        g3=QGroupBox("合并模式刻度")
+        g3_lay=QGridLayout(g3); g3_lay.setSpacing(6)
+        g3_lay.addWidget(QLabel("电流(mA):"),0,0)
+        self.spin_cmin=QDoubleSpinBox(); self.spin_cmin.setRange(-1000,1000); self.spin_cmin.setValue(0); self.spin_cmin.setSingleStep(10)
+        g3_lay.addWidget(self.spin_cmin,0,1)
+        g3_lay.addWidget(QLabel("~", alignment=Qt.AlignCenter),0,2)
+        self.spin_cmax=QDoubleSpinBox(); self.spin_cmax.setRange(1,10000); self.spin_cmax.setValue(350); self.spin_cmax.setSingleStep(10)
+        g3_lay.addWidget(self.spin_cmax,0,3)
+        g3_lay.addWidget(QLabel("电压(V):"),1,0)
+        self.spin_vmin=QDoubleSpinBox(); self.spin_vmin.setRange(-10,10); self.spin_vmin.setValue(0); self.spin_vmin.setSingleStep(0.5)
+        g3_lay.addWidget(self.spin_vmin,1,1)
+        g3_lay.addWidget(QLabel("~", alignment=Qt.AlignCenter),1,2)
+        self.spin_vmax=QDoubleSpinBox(); self.spin_vmax.setRange(0.1,100); self.spin_vmax.setValue(20); self.spin_vmax.setSingleStep(1)
+        g3_lay.addWidget(self.spin_vmax,1,3)
+        right_col.addWidget(g3)
+
+        g4=QGroupBox("数据与曲线")
+        g4_lay=QGridLayout(g4); g4_lay.setSpacing(6)
+        g4_lay.addWidget(QLabel("自动保存阈值:"),0,0)
+        self.spin_cache=QSpinBox(); self.spin_cache.setRange(10000,1000000); self.spin_cache.setValue(50000); self.spin_cache.setSingleStep(10000)
+        g4_lay.addWidget(self.spin_cache,0,1)
+        g4_lay.addWidget(QLabel("点"),0,2)
+        g4_lay.addWidget(QLabel("线条粗细:"),1,0)
+        self.spin_lw=QDoubleSpinBox(); self.spin_lw.setRange(0.5,10); self.spin_lw.setValue(2); self.spin_lw.setSingleStep(0.5); self.spin_lw.setSuffix(" px")
+        g4_lay.addWidget(self.spin_lw,1,1)
+        right_col.addWidget(g4)
+        right_col.addStretch()
+        display_row.addLayout(right_col)
+
+        lay.addLayout(display_row)
+
+        # === 日志设置 ===
+        g_log=QGroupBox("日志设置")
+        g_log_lay=QGridLayout(g_log); g_log_lay.setSpacing(8)
+        g_log_lay.addWidget(QLabel("日志路径:"),0,0)
+        self.le_log_path=QLineEdit(log_dir)
+        self.le_log_path.setReadOnly(True)
+        g_log_lay.addWidget(self.le_log_path,0,1)
+        self.btn_open_log=QPushButton("打开日志文件夹"); self.btn_open_log.setObjectName("load")
+        self.btn_open_log.clicked.connect(lambda: os.startfile(log_dir))
+        g_log_lay.addWidget(self.btn_open_log,0,2)
+        g_log_lay.addWidget(QLabel("当前日志:"),1,0)
+        self.lb_log_file=QLabel(os.path.basename(log_file))
+        self.lb_log_file.setStyleSheet("color:#89b4fa;font-size:12px")
+        g_log_lay.addWidget(self.lb_log_file,1,1,1,2)
+        lay.addWidget(g_log)
+
+        # === 截图设置 ===
+        g_scr=QGroupBox("截图设置")
+        g_scr_lay=QGridLayout(g_scr); g_scr_lay.setSpacing(8)
+        g_scr_lay.addWidget(QLabel("截图路径:"),0,0)
+        self.le_screenshot_path=QLineEdit(screenshot_dir)
+        g_scr_lay.addWidget(self.le_screenshot_path,0,1)
+        btn_screenshot_dir=QPushButton("浏览..."); btn_screenshot_dir.clicked.connect(self._browse_screenshot)
+        g_scr_lay.addWidget(btn_screenshot_dir,0,2)
+        btn_open_screenshot=QPushButton("打开截图文件夹"); btn_open_screenshot.setObjectName("load")
+        btn_open_screenshot.clicked.connect(lambda: os.startfile(self.le_screenshot_path.text()))
+        g_scr_lay.addWidget(btn_open_screenshot,1,1,1,2)
+        lay.addWidget(g_scr)
 
         lay.addStretch()
 
@@ -500,9 +705,12 @@ class Main(QMainWindow):
         if self.btn_region.isChecked():
             self.btn_region.setText("关闭选区分析")
             self.act_region.setText("选区分析:开")
+            self.statusBar().showMessage("选区分析已开启：左键点击第1个点设置起点，再点击第2个点设置终点")
         else:
             self.btn_region.setText("开启选区分析")
             self.act_region.setText("选区分析:关")
+            self.sel_start=None
+            self.statusBar().showMessage("选区分析已关闭")
 
     def _toggle_region_tb(self):
         if self.act_region.text()=="选区分析:关":
@@ -559,9 +767,9 @@ class Main(QMainWindow):
     # ===== Actions =====
     def _connect(self):
         if not GPIB_OK: QMessageBox.warning(self,"提示","GPIB驱动未加载"); return
-        a=self.spin_a.value()
+        board=self.spin_board.value(); addr=self.spin_a.value()
         if gpib_ud>=0: g_close(); self.btn_co.setText("连接设备"); self.statusBar().showMessage("已断开")
-        elif g_open(a): self.btn_co.setText("断开设备"); self.statusBar().showMessage(f"已连接 (地址{a})")
+        elif g_open(board,addr): self.btn_co.setText("断开设备"); self.statusBar().showMessage(f"已连接 (板卡{board} 地址{addr})")
         else: QMessageBox.critical(self,"失败","连接失败")
 
     def _start(self):
@@ -631,7 +839,7 @@ class Main(QMainWindow):
             self.cm_c.setBrush(pg.mkBrush(137,180,250,40))
             self.cm_v.setData(self.ts,self.vs)
             self.cm_v.setPen(pg.mkPen("#f38ba8",width=lw))
-            # Auto scroll for merged (only if not user scrolling)
+            # Auto scroll for merged
             if self.ts[-1]>60 and not self.user_scrolling:
                 vb=self.pm.plotItem.vb; vr=vb.viewRange()[0]
                 if self.ts[-1] >= vr[1]-5: vb.setXRange(self.ts[-1]-60,self.ts[-1],padding=0)
@@ -640,7 +848,7 @@ class Main(QMainWindow):
             self.cc.setPen(pg.mkPen("#89b4fa",width=lw))
             self.cv.setData(self.ts,self.vs)
             self.cv.setPen(pg.mkPen("#f38ba8",width=lw))
-            # Auto scroll for dual (only if not user scrolling)
+            # Auto scroll for dual
             if self.ts[-1]>60 and not self.user_scrolling:
                 vb=self.pc.plotItem.vb; vr=vb.viewRange()[0]
                 if self.ts[-1] >= vr[1]-5:
@@ -667,16 +875,38 @@ class Main(QMainWindow):
 
         # Labels
         if is_merged:
-            self.lmc.setText(f" {lc:.1f}mA "); self.lmc.setPos(self.ts[-1],lc); self.lmc.show()
-            # Voltage label position: use left Y range for positioning
-            y_range = self.pm.plotItem.vb.viewRange()[1]
-            y_pos = y_range[1] * 0.95  # Position near top of left Y range
-            self.lmv.setText(f" {lv:.3f}V "); self.lmv.setPos(self.ts[-1],y_pos); self.lmv.show()
+            # Current: label at LEFT axis edge (in scene coordinates)
+            self.tc_m.setPos(lc)
+            scene_pos = self.pm.plotItem.vb.mapViewToScene(pg.Point(0, lc))
+            self.lmc.setText(f" {lc:.1f}mA ")
+            self.lmc.setPos(scene_pos.x(), scene_pos.y())
+            self.lmc.show()
+            # Voltage: label at curve tip (in scene coordinates)
+            main_y_range = self.pm.plotItem.vb.viewRange()[1]
+            vb2_y_range = self.pm_vb2.viewRange()[1]
+            if vb2_y_range[1] > vb2_y_range[0]:
+                v_ratio = (lv - vb2_y_range[0]) / (vb2_y_range[1] - vb2_y_range[0])
+                v_y = main_y_range[0] + v_ratio * (main_y_range[1] - main_y_range[0])
+            else:
+                v_y = (main_y_range[0] + main_y_range[1]) / 2
+            self.tvl_m.setPos(v_y)
+            scene_pos_v = self.pm.plotItem.vb.mapViewToScene(pg.Point(self.ts[-1], v_y))
+            self.lmv.setText(f" {lv:.3f}V ")
+            self.lmv.setPos(scene_pos_v.x(), scene_pos_v.y())
+            self.lmv.show()
         else:
-            self.lc.setText(f" {lc:.1f}mA "); self.lc.setPos(self.ts[-1],lc); self.lc.show()
-            self.lvl.setText(f" {lv:.3f}V "); self.lvl.setPos(self.ts[-1],lv); self.lvl.show()
-            xl=max(0,self.ts[-1]-2)
-            self.tc.setData([xl,self.ts[-1]],[lc,lc]); self.tvl.setData([xl,self.ts[-1]],[lv,lv])
+            # Current: label at LEFT axis edge (in scene coordinates)
+            self.tc.setPos(lc)
+            scene_pos_c = self.pc.plotItem.vb.mapViewToScene(pg.Point(0, lc))
+            self.lc.setText(f" {lc:.1f}mA ")
+            self.lc.setPos(scene_pos_c.x(), scene_pos_c.y())
+            self.lc.show()
+            # Voltage: label at LEFT axis edge (in scene coordinates)
+            self.tvl.setPos(lv)
+            scene_pos_v2 = self.pv.plotItem.vb.mapViewToScene(pg.Point(0, lv))
+            self.lvl.setText(f" {lv:.3f}V ")
+            self.lvl.setPos(scene_pos_v2.x(), scene_pos_v2.y())
+            self.lvl.show()
 
         # Stats - instant or average
         if self.display_mode=="instant":
@@ -748,6 +978,24 @@ class Main(QMainWindow):
         g_send(f"VOLT {self.sv.value():.3f}"); g_send(f"CURR {self.sc.value()/1000:.3f}")
         QMessageBox.information(self,"成功","设置已生效")
 
+    def _screenshot(self):
+        path = self.le_screenshot_path.text() if hasattr(self, 'le_screenshot_path') else screenshot_dir
+        os.makedirs(path, exist_ok=True)
+        fname = os.path.join(path, f"pg_power_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+        screen = QApplication.primaryScreen()
+        if screen:
+            pixmap = screen.grabWindow(self.winId())
+            pixmap.save(fname, "PNG")
+            QMessageBox.information(self, "截图成功", f"已保存到:\n{fname}")
+            logger.info(f"截图: {fname}")
+        else:
+            QMessageBox.warning(self, "失败", "无法获取屏幕截图")
+
+    def _browse_screenshot(self):
+        d = QFileDialog.getExistingDirectory(self, "选择截图目录", self.le_screenshot_path.text())
+        if d:
+            self.le_screenshot_path.setText(d)
+
     def _run(self):
         c=self.se.toPlainText()
         if not c.strip(): return
@@ -797,6 +1045,8 @@ class Main(QMainWindow):
 
     def _load_settings(self):
         s=QSettings("PG-Power","settings")
+        self.cb_power.setCurrentText(s.value("power_model","663XX"))
+        self.spin_board.setValue(s.value("gpib_board",0,type=int))
         self.spin_a.setValue(s.value("gpib_addr",5,type=int))
         self.sv.setValue(s.value("max_volt",4.2,type=float))
         self.sc.setValue(s.value("max_curr",1000,type=float))
@@ -810,9 +1060,13 @@ class Main(QMainWindow):
         self.track_side=s.value("track_side","right")
         if self.track_side=="left": self.btn_tl.setStyleSheet("background:#a6e3a1;")
         else: self.btn_tr.setStyleSheet("background:#a6e3a1;")
+        sp=s.value("screenshot_path","")
+        if sp: self.le_screenshot_path.setText(sp)
 
     def _save_settings(self):
         s=QSettings("PG-Power","settings")
+        s.setValue("power_model",self.cb_power.currentText())
+        s.setValue("gpib_board",self.spin_board.value())
         s.setValue("gpib_addr",self.spin_a.value())
         s.setValue("max_volt",self.sv.value())
         s.setValue("max_curr",self.sc.value())
@@ -824,12 +1078,13 @@ class Main(QMainWindow):
         s.setValue("line_width",self.spin_lw.value())
         s.setValue("coord",self.cb_coord.currentIndex())
         s.setValue("track_side",self.track_side)
+        s.setValue("screenshot_path",self.le_screenshot_path.text())
 
     def closeEvent(self, e):
         self.collecting=False; g_close(); self._save_settings(); e.accept()
 
 if __name__=="__main__":
     app=QApplication(sys.argv); app.setStyleSheet(DARK)
-    ico=os.path.join(os.path.dirname(os.path.abspath(__file__)),"icon.ico")
+    ico=os.path.join(sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)),"icon.ico")
     if os.path.exists(ico): app.setWindowIcon(QIcon(ico))
     w=Main(); w.show(); sys.exit(app.exec_())
