@@ -512,19 +512,23 @@ class Main(QMainWindow):
         if event.button()==Qt.LeftButton and (self.btn_region.isChecked() or self.act_region.text()=="选区分析:开"):
             pos=event.pos()
             plot=self._get_active_plot()
-            if plot and plot.sceneBoundingRect().contains(pos):
-                mp=plot.plotItem.vb.mapSceneToView(pos)
-                if self.sel_start is None:
-                    # Auto-clear old selection before creating new one
-                    self._clear_selection()
-                    self.sel_start=mp.x()
-                    self.statusBar().showMessage(f"已选择起点: {mp.x():.1f}s，请点击终点")
-                    self._draw_sel_line(plot, mp.x())
-                else:
-                    t0=min(self.sel_start,mp.x()); t1=max(self.sel_start,mp.x())
-                    self.sel_start=None
-                    self._draw_sel_region(plot, t0,t1)
-                    self._show_analysis(t0,t1)
+            if plot:
+                # Map from main window coordinates to scene coordinates
+                scene_pos = plot.mapFromGlobal(self.mapToGlobal(pos))
+                # Check if scene position is within plot bounds
+                if plot.plotItem.vb.sceneBoundingRect().contains(scene_pos):
+                    mp=plot.plotItem.vb.mapSceneToView(scene_pos)
+                    if self.sel_start is None:
+                        # Auto-clear old selection before creating new one
+                        self._clear_selection()
+                        self.sel_start=mp.x()
+                        self.statusBar().showMessage(f"已选择起点: {mp.x():.1f}s，请点击终点")
+                        self._draw_sel_line(plot, mp.x())
+                    else:
+                        t0=min(self.sel_start,mp.x()); t1=max(self.sel_start,mp.x())
+                        self.sel_start=None
+                        self._draw_sel_region(plot, t0,t1)
+                        self._show_analysis(t0,t1)
         super().mousePressEvent(event)
 
     def _draw_sel_line(self, plot, x):
@@ -604,9 +608,21 @@ class Main(QMainWindow):
         self.analysis_win.setCentralWidget(central)
         # Enable dragging on frameless window
         self._drag_pos = None
-        central.mousePressEvent = lambda e: setattr(self, '_drag_pos', e.globalPos()) if e.button() == Qt.LeftButton else None
-        central.mouseMoveEvent = lambda e: self.analysis_win.move(self.analysis_win.pos() + e.globalPos() - self._drag_pos) if self._drag_pos else None
-        central.mouseReleaseEvent = lambda e: setattr(self, '_drag_pos', None)
+        self._drag_win_pos = None
+        def _press(e):
+            if e.button() == Qt.LeftButton:
+                self._drag_pos = e.globalPos()
+                self._drag_win_pos = self.analysis_win.pos()
+        def _move(e):
+            if self._drag_pos and self._drag_win_pos:
+                delta = e.globalPos() - self._drag_pos
+                self.analysis_win.move(self._drag_win_pos + delta)
+        def _release(e):
+            self._drag_pos = None
+            self._drag_win_pos = None
+        central.mousePressEvent = _press
+        central.mouseMoveEvent = _move
+        central.mouseReleaseEvent = _release
         layout = QVBoxLayout(central)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(6)
