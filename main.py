@@ -172,6 +172,8 @@ class Main(QMainWindow):
         self.unit=0  # 0=mWh/Ah  1=Wh/Ah
         self.coord_mode=0  # 0=adaptive 1=fixed 2=log
         self.scroll_pos=0
+        self.time_mode=0  # 0=relative seconds, 1=system time
+        self.sample_interval=50  # ms
 
         # Test phases
         self.phases=[{"n":"开机","d":310,"v":5.0,"c":0.300,"s":0.020},
@@ -277,6 +279,12 @@ class Main(QMainWindow):
         self.btn_st.clicked.connect(self._start); gl4.addWidget(self.btn_st)
         self.btn_sp=QPushButton("停止采集"); self.btn_sp.setObjectName("stop")
         self.btn_sp.clicked.connect(self._stop); gl4.addWidget(self.btn_sp)
+        gl4.addWidget(QLabel("采样率(ms):"))
+        self.cb_sample=QComboBox(); self.cb_sample.setEditable(True)
+        self.cb_sample.addItems(["20","50","70","100","200","300","500","1000"])
+        self.cb_sample.setCurrentText("50")
+        self.cb_sample.currentTextChanged.connect(lambda v: setattr(self,'sample_interval',int(v) if v.isdigit() else 50))
+        gl4.addWidget(self.cb_sample)
         ll.addWidget(g4)
 
         # Data ops
@@ -292,7 +300,7 @@ class Main(QMainWindow):
 
         # Merged plot (dual Y-axis: left=current, right=voltage)
         self.pm=pg.PlotWidget(); self.pm.setBackground("#11111b"); self.pm.showGrid(x=True,y=True,alpha=0.1)
-        self.pm.setLabel("left","电流 (mA)",color="#89b4fa"); self.pm.setLabel("bottom","时间 (s)",color="#6c7086")
+        self.pm.setLabel("left","电流 (mA)",color="#89b4fa"); self.pm.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
         self.pm.setTitle("电压 / 电流 波形",color="#cdd6f4",size="12pt")
         self._cn_menu(self.pm)
         # Right axis for voltage
@@ -332,7 +340,7 @@ class Main(QMainWindow):
 
         # Dual mode: Current plot
         self.pc=pg.PlotWidget(); self.pc.setBackground("#11111b"); self.pc.showGrid(x=True,y=True,alpha=0.1)
-        self.pc.setLabel("left","电流 (mA)",color="#6c7086"); self.pc.setLabel("bottom","时间 (s)",color="#6c7086")
+        self.pc.setLabel("left","电流 (mA)",color="#6c7086"); self.pc.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
         self.pc.setTitle("电流波形",color="#cdd6f4",size="12pt")
         self._cn_menu(self.pc)
         self.cc=self.pc.plot(pen=pg.mkPen("#89b4fa",width=2),fillLevel=0,brush=pg.mkBrush(137,180,250,40))
@@ -350,7 +358,7 @@ class Main(QMainWindow):
 
         # Dual mode: Voltage plot
         self.pv=pg.PlotWidget(); self.pv.setBackground("#11111b"); self.pv.showGrid(x=True,y=True,alpha=0.1)
-        self.pv.setLabel("left","电压 (V)",color="#6c7086"); self.pv.setLabel("bottom","时间 (s)",color="#6c7086")
+        self.pv.setLabel("left","电压 (V)",color="#6c7086"); self.pv.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
         self.pv.setTitle("电压波形",color="#cdd6f4",size="12pt")
         self._cn_menu(self.pv)
         self.cv=self.pv.plot(pen=pg.mkPen("#f38ba8",width=2))
@@ -680,6 +688,17 @@ class Main(QMainWindow):
 
         lay.addLayout(display_row)
 
+        # === 时间与采样设置 ===
+        g_time=QGroupBox("时间与采样设置")
+        g_time_lay=QGridLayout(g_time); g_time_lay.setSpacing(8)
+        g_time_lay.addWidget(QLabel("时间轴显示:"),0,0)
+        self.cb_time_mode=QComboBox(); self.cb_time_mode.addItems(["相对时间(秒)","系统时间"])
+        self.cb_time_mode.currentIndexChanged.connect(lambda i: setattr(self,'time_mode',i))
+        g_time_lay.addWidget(self.cb_time_mode,0,1)
+        g_time_lay.addWidget(QLabel("采样率(ms):"),0,2)
+        g_time_lay.addWidget(self.cb_sample,0,3)
+        lay.addWidget(g_time)
+
         # === 日志设置 ===
         g_log=QGroupBox("日志设置")
         g_log_lay=QGridLayout(g_log); g_log_lay.setSpacing(8)
@@ -839,7 +858,7 @@ class Main(QMainWindow):
                     if self.act_save_auto.isChecked() and self.save_count>=self.spin_cache.value():
                         self._auto_save(); self.save_count=0
             except Exception as e: logger.error(f"异常: {e}")
-            time.sleep(0.05)
+            time.sleep(self.sample_interval/1000.0)
 
     def _auto_save(self):
         try:
@@ -1092,6 +1111,10 @@ class Main(QMainWindow):
         else: self.btn_tr.setStyleSheet("background:#a6e3a1;")
         sp=s.value("screenshot_path","")
         if sp: self.le_screenshot_path.setText(sp)
+        self.time_mode=s.value("time_mode",0,type=int)
+        self.cb_time_mode.setCurrentIndex(self.time_mode)
+        self.sample_interval=s.value("sample_interval",50,type=int)
+        self.cb_sample.setCurrentText(str(self.sample_interval))
 
     def _save_settings(self):
         s=QSettings("PG-Power","settings")
@@ -1109,6 +1132,8 @@ class Main(QMainWindow):
         s.setValue("coord",self.cb_coord.currentIndex())
         s.setValue("track_side",self.track_side)
         s.setValue("screenshot_path",self.le_screenshot_path.text())
+        s.setValue("time_mode",self.time_mode)
+        s.setValue("sample_interval",self.sample_interval)
 
     def closeEvent(self, e):
         self.collecting=False; g_close(); self._save_settings(); e.accept()
