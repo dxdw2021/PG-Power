@@ -1289,7 +1289,7 @@ class Main(QMainWindow):
         self._do_generate_report(product_name, battery_v, battery_mah)
 
     def _do_generate_report(self, product_name, battery_v, battery_mah):
-        """Generate PDF report with clean table layout"""
+        """Generate PDF report using HTML layout for clean formatting"""
         if not self.sel_region_rect: return
         r = self.sel_region_rect.getRegion()
         t0, t1 = r[0], r[1]
@@ -1320,131 +1320,83 @@ class Main(QMainWindow):
         else:
             est_int_days = 0; est_int_hours = 0
         
+        h = int(dt // 3600); mi = int((dt % 3600) // 60); s = dt % 60
+        dur = f"{h:02d}:{mi:02d}:{s:06.3f}"
+        gen_time = datetime.now().strftime('%Y/%m/%d %H:%M:%S')
+        charge_mah = charge / 1000
+        
         fname, _ = QFileDialog.getSaveFileName(self, "保存报告", 
             f"{product_name}_power_report.pdf", "PDF (*.pdf)")
         if not fname: return
         
         from PyQt5.QtPrintSupport import QPrinter
-        from PyQt5.QtGui import QPainter, QFont, QPen, QColor
-        from PyQt5.QtCore import QRectF
+        from PyQt5.QtGui import QTextDocument
+        
+        html = f"""
+        <html><head><style>
+        body {{ font-family: "Microsoft YaHei", "SimSun", sans-serif; color: #000; }}
+        .title {{ text-align: center; font-size: 28px; font-weight: bold; margin: 20px 0 5px 0; }}
+        .ver {{ text-align: center; font-size: 9px; color: #666; margin-bottom: 5px; }}
+        .subtitle {{ text-align: center; font-size: 20px; font-weight: bold; margin: 10px 0 15px 0; }}
+        .device {{ font-size: 12px; margin-bottom: 10px; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
+        th, td {{ border: 1px solid #ccc; padding: 6px 12px; text-align: center; font-size: 11px; }}
+        th {{ background: #f0f0f0; font-weight: bold; }}
+        td.label {{ text-align: left; font-weight: bold; width: 20%; }}
+        .section-title {{ font-size: 14px; font-weight: bold; margin: 15px 0 8px 0; }}
+        .sub-title {{ font-size: 12px; font-weight: bold; margin: 8px 0 5px 0; }}
+        .estimate {{ font-size: 11px; margin: 3px 0; }}
+        .footer {{ border-top: 1px solid #ccc; padding-top: 8px; margin-top: 15px; font-size: 10px; }}
+        .footer td {{ border: none; padding: 3px 12px; text-align: left; font-size: 10px; }}
+        </style></head><body>
+        
+        <div class="title">Power</div>
+        <div class="ver">设备版本：1.3.0　　软件版本：3.0.0.0</div>
+        <div class="subtitle">功耗测试报告</div>
+        <div class="device">被测设备：{product_name}</div>
+        
+        <table>
+        <tr><th></th><th>最小值</th><th>平均值</th><th>最大值</th></tr>
+        <tr><td class="label">电流</td><td>{min_c:.3f} mA</td><td>{avg_c:.3f} mA</td><td>{max_c:.3f} mA</td></tr>
+        <tr><td class="label">电压</td><td>{min_v:.3f} V</td><td>{avg_v:.3f} V</td><td>{max_v:.3f} V</td></tr>
+        <tr><td class="label">功率</td><td>{min_p:.3f} mW</td><td>{avg_p:.3f} mW</td><td>{max_p:.3f} mW</td></tr>
+        </table>
+        
+        <div class="section-title">预估结果</div>
+        <div class="sub-title">能量累计</div>
+        <div class="estimate">{battery_v}V电池</div>
+        <table>
+        <tr><td>{charge:.3f} μAh</td><td>{energy:.3f} μWh</td><td></td></tr>
+        </table>
+        
+        <table>
+        <tr><th>本次测试</th><th>1天</th><th>30天</th></tr>
+        <tr><td>{charge:.3f} μAh</td><td>{e_1d:.3f} μWh</td><td>{e_30d:.3f} μWh</td></tr>
+        <tr><td></td><td>{charge_mah:.3f} mAh</td><td>{charge_mah*30:.3f} mAh</td></tr>
+        </table>
+        
+        <div class="estimate">预计{battery_mah}mAh电量，可用{est_int_days}天{est_int_hours}小时</div>
+        
+        <div class="footer">
+        <table>
+        <tr><td>报告测试时长</td><td>{dur}</td></tr>
+        <tr><td>报告生成时间</td><td>{gen_time}</td></tr>
+        </table>
+        </div>
+        
+        </body></html>
+        """.replace("{e_1d:.3f} μWh", f"{energy*86400/dt/1000:.3f} mWh" if dt > 0 else "0 mWh") \
+            .replace("{e_30d:.3f} μWh", f"{energy*86400*30/dt/1000:.3f} mWh" if dt > 0 else "0 mWh")
         
         printer = QPrinter(QPrinter.HighResolution)
         printer.setOutputFormat(QPrinter.PdfFormat)
         printer.setOutputFileName(fname)
         printer.setPageSize(QPrinter.A4)
         
-        p = QPainter()
-        if not p.begin(printer):
-            QMessageBox.warning(self, "错误", "无法创建PDF")
-            return
+        doc = QTextDocument()
+        doc.setHtml(html)
+        doc.print_(printer)
         
-        pw = printer.pageRect().width()
-        m = int(pw * 0.1)
-        cw = pw - 2 * m
-        y = m
-        black = QColor(0, 0, 0)
-        gray = QColor(120, 120, 120)
-        
-        def font(sz, bold=False):
-            f = QFont("Microsoft YaHei", sz)
-            f.setBold(bold)
-            p.setFont(f)
-        
-        def text(x, w, txt, sz=10, c=black, b=False, a='l'):
-            font(sz, b)
-            p.setPen(c)
-            fl = Qt.AlignVCenter
-            if a == 'c': fl |= Qt.AlignHCenter
-            elif a == 'r': fl |= Qt.AlignRight
-            else: fl |= Qt.AlignLeft
-            p.drawText(QRectF(x, y, w, sz * 2.5), fl, txt)
-        
-        def line():
-            p.setPen(QPen(QColor(200, 200, 200), 1))
-            p.drawLine(m, y + 2, pw - m, y + 2)
-        
-        def adv(h = 20):
-            nonlocal y; y += h
-        
-        # Title
-        text(m, cw, "Power", 28, black, True, 'c'); adv(38)
-        text(m, cw, "设备版本：1.3.0    软件版本：3.0.0.0", 9, gray, a='c'); adv(14)
-        text(m, cw, "功耗测试报告", 20, black, True, 'c'); adv(30)
-        text(m, cw, f"被测设备：{product_name}", 12, black); adv(28)
-        line(); adv(8)
-        
-        # Table
-        c0 = int(cw * 0.22)  # label
-        c1 = int(cw * 0.26)  # min
-        c2 = int(cw * 0.26)  # avg
-        c3 = cw - c0 - c1 - c2  # max
-        
-        text(m, c0, "", 11, black, True)
-        text(m+c0, c1, "最小值", 11, black, True, 'c')
-        text(m+c0+c1, c2, "平均值", 11, black, True, 'c')
-        text(m+c0+c1+c2, c3, "最大值", 11, black, True, 'c')
-        adv(22); line(); adv(4)
-        
-        for label, v1, v2, v3 in [
-            ("电流", f"{min_c:.3f} mA", f"{avg_c:.3f} mA", f"{max_c:.3f} mA"),
-            ("电压", f"{min_v:.3f} V", f"{avg_v:.3f} V", f"{max_v:.3f} V"),
-            ("功率", f"{min_p:.3f} mW", f"{avg_p:.3f} mW", f"{max_p:.3f} mW"),
-        ]:
-            text(m, c0, label, 10, black)
-            text(m+c0, c1, v1, 10, black, a='c')
-            text(m+c0+c1, c2, v2, 10, black, a='c')
-            text(m+c0+c1+c2, c3, v3, 10, black, a='c')
-            adv(20)
-        
-        adv(4); line(); adv(8)
-        
-        # Estimated
-        text(m, cw, "预估结果", 14, black, True); adv(24)
-        text(m, cw, "能量累计", 12, black, True); adv(20)
-        text(m, cw, f"{battery_v}V电池", 11, black); adv(20)
-        
-        # Values
-        c_left = int(cw * 0.35)
-        c_right = cw - c_left
-        text(m, c_left, f"{charge:.3f} μAh", 11, black)
-        text(m + c_left, c_right, f"{energy:.3f} μWh", 11, black)
-        adv(24)
-        
-        # Time columns
-        tc = [int(cw * 0.35), int(cw * 0.35), cw - int(cw * 0.35) * 2]
-        text(m, tc[0], "本次测试", 10, gray)
-        text(m + tc[0], tc[1], "1天", 10, gray, a='c')
-        text(m + tc[0] + tc[1], tc[2], "30天", 10, gray, a='c')
-        adv(18)
-        
-        e_1d = energy * 86400 / dt if dt > 0 else 0
-        e_30d = e_1d * 30
-        text(m, tc[0], f"{charge:.3f} μAh", 10, black)
-        text(m + tc[0], tc[1], f"{e_1d/1000:.3f} mWh", 10, black, a='c')
-        text(m + tc[0] + tc[1], tc[2], f"{e_30d/1000:.3f} mWh", 10, black, a='c')
-        adv(18)
-        
-        charge_mah = charge / 1000
-        text(m, tc[0], f"{charge_mah:.3f} mAh", 10, black)
-        adv(22)
-        
-        text(m, cw, f"预计{battery_mah}mAh电量，可用{est_int_days}天{est_int_hours}小时", 12, black, True)
-        adv(28)
-        
-        # Footer
-        line(); adv(8)
-        h = int(dt // 3600); mi = int((dt % 3600) // 60); s = dt % 60
-        dur = f"{h:02d}:{mi:02d}:{s:06.3f}"
-        text(m, cw // 2, "报告测试时长", 10, gray)
-        text(m + cw // 2, cw // 2, dur, 10, black)
-        adv(18)
-        text(m, cw // 2, "报告生成时间", 10, gray)
-        text(m + cw // 2, cw // 2, datetime.now().strftime('%Y/%m/%d %H:%M:%S'), 10, black)
-        adv(18)
-        text(m, cw // 2, "", 10, gray)
-        text(m + cw // 2, cw // 2, f"{charge_mah/1000:.3f} Ah", 10, black)
-        
-        p.end()
         QMessageBox.information(self, "生成成功", f"报告已保存:\n{fname}")
         logger.info(f"报告: {fname}")
         os.startfile(fname)
