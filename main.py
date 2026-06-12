@@ -602,6 +602,11 @@ class Main(QMainWindow):
         
         central = QWidget()
         self.analysis_win.setCentralWidget(central)
+        # Enable dragging on frameless window
+        self._drag_pos = None
+        central.mousePressEvent = lambda e: setattr(self, '_drag_pos', e.globalPos()) if e.button() == Qt.LeftButton else None
+        central.mouseMoveEvent = lambda e: self.analysis_win.move(self.analysis_win.pos() + e.globalPos() - self._drag_pos) if self._drag_pos else None
+        central.mouseReleaseEvent = lambda e: setattr(self, '_drag_pos', None)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(6)
