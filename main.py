@@ -145,6 +145,24 @@ def get_themes(is_low_res):
     """
     return DARK, LIGHT
 
+class TimeAxisItem(pg.AxisItem):
+    """Custom axis item that displays system time"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.t0_abs = None
+    
+    def setStartTime(self, t0):
+        self.t0_abs = t0
+    
+    def tickStrings(self, values, scale, spacing):
+        if self.t0_abs is None:
+            return [f"{v:.1f}" for v in values]
+        strings = []
+        for v in values:
+            dt = self.t0_abs + timedelta(seconds=v)
+            strings.append(dt.strftime("%Y%m%d %Hh%Mm%Ss"))
+        return strings
+
 class Main(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -226,10 +244,13 @@ class Main(QMainWindow):
     def _init_wave(self, parent):
         lay=QHBoxLayout(parent); sp=QSplitter(Qt.Horizontal)
 
-        # Left panel - adaptive width
+        # Left panel - scrollable
+        left_scroll=QScrollArea(); left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setFrameShape(QFrame.NoFrame)
         left=QWidget()
         left_width = 180 if self.is_low_res else 220
-        left.setFixedWidth(left_width)
+        left_scroll.setFixedWidth(left_width + 20)
         ll=QVBoxLayout(left); ll.setSpacing(2 if self.is_low_res else 4)
         
         # Adaptive font sizes
@@ -299,7 +320,12 @@ class Main(QMainWindow):
         mid=QWidget(); ml=QVBoxLayout(mid); ml.setContentsMargins(0,0,0,0); ml.setSpacing(2)
 
         # Merged plot (dual Y-axis: left=current, right=voltage)
-        self.pm=pg.PlotWidget(); self.pm.setBackground("#11111b"); self.pm.showGrid(x=True,y=True,alpha=0.1)
+        if self.time_mode:
+            self.time_axis_m = TimeAxisItem(orientation='bottom')
+            self.pm = pg.PlotWidget(axisItems={'bottom': self.time_axis_m})
+        else:
+            self.pm = pg.PlotWidget()
+        self.pm.setBackground("#11111b"); self.pm.showGrid(x=True,y=True,alpha=0.1)
         self.pm.setLabel("left","电流 (mA)",color="#89b4fa"); self.pm.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
         self.pm.setTitle("电压 / 电流 波形",color="#cdd6f4",size="12pt")
         self._cn_menu(self.pm)
@@ -339,7 +365,12 @@ class Main(QMainWindow):
         ml.addWidget(self.pm)
 
         # Dual mode: Current plot
-        self.pc=pg.PlotWidget(); self.pc.setBackground("#11111b"); self.pc.showGrid(x=True,y=True,alpha=0.1)
+        if self.time_mode:
+            self.time_axis_c = TimeAxisItem(orientation='bottom')
+            self.pc = pg.PlotWidget(axisItems={'bottom': self.time_axis_c})
+        else:
+            self.pc = pg.PlotWidget()
+        self.pc.setBackground("#11111b"); self.pc.showGrid(x=True,y=True,alpha=0.1)
         self.pc.setLabel("left","电流 (mA)",color="#6c7086"); self.pc.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
         self.pc.setTitle("电流波形",color="#cdd6f4",size="12pt")
         self._cn_menu(self.pc)
@@ -357,7 +388,12 @@ class Main(QMainWindow):
         ml.addWidget(self.pc)
 
         # Dual mode: Voltage plot
-        self.pv=pg.PlotWidget(); self.pv.setBackground("#11111b"); self.pv.showGrid(x=True,y=True,alpha=0.1)
+        if self.time_mode:
+            self.time_axis_v = TimeAxisItem(orientation='bottom')
+            self.pv = pg.PlotWidget(axisItems={'bottom': self.time_axis_v})
+        else:
+            self.pv = pg.PlotWidget()
+        self.pv.setBackground("#11111b"); self.pv.showGrid(x=True,y=True,alpha=0.1)
         self.pv.setLabel("left","电压 (V)",color="#6c7086"); self.pv.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
         self.pv.setTitle("电压波形",color="#cdd6f4",size="12pt")
         self._cn_menu(self.pv)
@@ -386,7 +422,8 @@ class Main(QMainWindow):
         self.user_scrolling=False; self.scroll_timer=QTimer(); self.scroll_timer.setSingleShot(True)
         self.scroll_timer.timeout.connect(lambda: setattr(self,'user_scrolling',False))
 
-        sp.addWidget(left); sp.addWidget(mid); lay.addWidget(sp)
+        left_scroll.setWidget(left)
+        sp.addWidget(left_scroll); sp.addWidget(mid); lay.addWidget(sp)
 
     def _sync_vb(self):
         self.pm_vb2.setGeometry(self.pm.plotItem.vb.sceneBoundingRect())
@@ -824,7 +861,12 @@ class Main(QMainWindow):
         if not self.test_mode and (not GPIB_OK or gpib_ud<0):
             QMessageBox.warning(self,"提示","请先连接设备或启用测试模式"); return
         if not self.collecting:
-            self.collecting=True; self.t0=time.time(); self.phi=0; self.pe=0
+            self.collecting=True; self.t0=time.time(); self.t0_abs=datetime.now(); self.phi=0; self.pe=0
+            # Set time axis start time
+            if self.time_mode:
+                if hasattr(self, 'time_axis_m'): self.time_axis_m.setStartTime(self.t0_abs)
+                if hasattr(self, 'time_axis_c'): self.time_axis_c.setStartTime(self.t0_abs)
+                if hasattr(self, 'time_axis_v'): self.time_axis_v.setStartTime(self.t0_abs)
             threading.Thread(target=self._loop,daemon=True).start()
             self.statusBar().showMessage("采集中...")
             logger.info("采集已启动")
