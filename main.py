@@ -527,6 +527,27 @@ class Main(QMainWindow):
         self.sel_line=None; self.sel_region_rect=None
         self.analysis_win=None
         self._resizing=None; self._resize_start_x=None; self._resize_orig=None
+        
+        # Floating action buttons (shown when selection exists)
+        self.floating_btns = QWidget(self)
+        self.floating_btns.setStyleSheet("""
+            QWidget { background: rgba(30,30,46,220); border-radius: 8px; }
+            QPushButton { background: #313244; color: #cdd6f4; border: 1px solid #45475a;
+                border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: bold; }
+            QPushButton:hover { background: #45475a; }
+        """)
+        btn_layout = QHBoxLayout(self.floating_btns)
+        btn_layout.setContentsMargins(8, 6, 8, 6)
+        btn_layout.setSpacing(8)
+        btn_screenshot = QPushButton("截图区域")
+        btn_screenshot.clicked.connect(self._screenshot_region)
+        btn_layout.addWidget(btn_screenshot)
+        btn_report = QPushButton("生成测试报告")
+        btn_report.setStyleSheet("QPushButton { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }")
+        btn_report.clicked.connect(self._generate_report)
+        btn_layout.addWidget(btn_report)
+        self.floating_btns.hide()
+        
         self.user_scrolling=False; self.scroll_timer=QTimer(); self.scroll_timer.setSingleShot(True)
         self.scroll_timer.timeout.connect(lambda: setattr(self,'user_scrolling',False))
 
@@ -731,6 +752,18 @@ class Main(QMainWindow):
             brush=pg.mkBrush(74, 158, 255, 50), pen=pg.mkPen(color="#4a9eff", width=1))
         self.sel_region_rect.sigRegionChanged.connect(self._on_sel_region_changed)
         plot.addItem(self.sel_region_rect)
+        # Show floating buttons at top-right of plot
+        self._position_floating_btns(plot)
+
+    def _position_floating_btns(self, plot):
+        """Position floating buttons at top-right of plot"""
+        if plot:
+            vr = plot.plotItem.vb.viewRange()
+            scene_pos = plot.plotItem.vb.mapViewToScene(pg.Point(vr[0][1], vr[1][1]))
+            global_pos = self.mapToGlobal(scene_pos.toPoint())
+            self.floating_btns.move(global_pos.x() - self.floating_btns.width() - 10, global_pos.y() + 10)
+            self.floating_btns.show()
+            self.floating_btns.raise_()
 
     def _on_sel_region_changed(self):
         """Update analysis when selection region is resized"""
@@ -1078,10 +1111,13 @@ class Main(QMainWindow):
             if self.sel_region_rect:
                 r = self.sel_region_rect.getRegion()
                 self._show_analysis(r[0], r[1])
+                plot = self._get_active_plot()
+                if plot: self._position_floating_btns(plot)
         else:
             self.btn_region.setText("开启选区分析")
             self.act_region.setText("选区分析:关")
             self.sel_start=None
+            self.floating_btns.hide()
             self.statusBar().showMessage("选区分析已关闭")
 
     def _toggle_region_tb(self):
@@ -1098,7 +1134,293 @@ class Main(QMainWindow):
             self.btn_region.setChecked(False)
             self.btn_region.setText("开启选区分析")
 
-    def _mode(self):
+    def _screenshot_region(self):
+        """Screenshot the current plot with selection region"""
+        plot = self._get_active_plot()
+        if not plot: return
+        # Capture the plot widget
+        pixmap = plot.grab()
+        path = self.le_screenshot_path.text() if hasattr(self, 'le_screenshot_path') else screenshot_dir
+        os.makedirs(path, exist_ok=True)
+        fname = os.path.join(path, f"region_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+        pixmap.save(fname, "PNG")
+        QMessageBox.information(self, "截图成功", f"选区截图已保存到:\n{fname}")
+        logger.info(f"选区截图: {fname}")
+
+    def _generate_report(self):
+        """Generate test report PDF"""
+        if not self.ts or not self.sel_region_rect:
+            QMessageBox.warning(self, "提示", "请先选择分析区域")
+            return
+        
+        # Load saved settings
+        s = QSettings("PG-Power", "report")
+        saved_products = s.value("products", [], type=list)
+        saved_voltages = s.value("voltages", ["3.7"], type=list)
+        saved_capacities = s.value("capacities", ["500"], type=list)
+        
+        # Create dialog
+        from PyQt5.QtWidgets import QDialog, QComboBox as CmB
+        dlg = QDialog(self)
+        dlg.setWindowTitle("生成测试报告")
+        dlg.setMinimumWidth(400)
+        dlg.setStyleSheet("""
+            QDialog { background: #1e1e2e; color: #cdd6f4; }
+            QLabel { color: #bac2de; }
+            QComboBox, QLineEdit { background: #11111b; color: #cdd6f4; border: 1px solid #313244;
+                border-radius: 4px; padding: 6px 10px; }
+            QPushButton { background: #313244; color: #cdd6f4; border: 1px solid #45475a;
+                border-radius: 6px; padding: 8px 16px; font-weight: bold; }
+            QPushButton:hover { background: #45475a; }
+            QPushButton#ok { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
+        """)
+        layout = QGridLayout(dlg)
+        
+        layout.addWidget(QLabel("被测产品名称:"), 0, 0)
+        product_input = CmB() if saved_products else QLineEdit()
+        if isinstance(product_input, CmB):
+            product_input.setEditable(True)
+            product_input.addItems(saved_products)
+            product_input.setCurrentText(saved_products[0] if saved_products else "")
+        else:
+            product_input.setPlaceholderText("输入产品名称")
+        layout.addWidget(product_input, 0, 1)
+        
+        layout.addWidget(QLabel("电池额定电压 (V):"), 1, 0)
+        volt_input = CmB() if saved_voltages else QLineEdit()
+        if isinstance(volt_input, CmB):
+            volt_input.setEditable(True)
+            volt_input.addItems(saved_voltages)
+            volt_input.setCurrentText(saved_voltages[0] if saved_voltages else "3.7")
+        else:
+            volt_input.setText("3.7")
+        layout.addWidget(volt_input, 1, 1)
+        
+        layout.addWidget(QLabel("电池总电量 (mAh):"), 2, 0)
+        cap_input = CmB() if saved_capacities else QLineEdit()
+        if isinstance(cap_input, CmB):
+            cap_input.setEditable(True)
+            cap_input.addItems(saved_capacities)
+            cap_input.setCurrentText(saved_capacities[0] if saved_capacities else "500")
+        else:
+            cap_input.setText("500")
+        layout.addWidget(cap_input, 2, 1)
+        
+        btn_row = QHBoxLayout()
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_row.addWidget(btn_cancel)
+        btn_ok = QPushButton("确认生成")
+        btn_ok.setObjectName("ok")
+        btn_ok.clicked.connect(dlg.accept)
+        btn_row.addWidget(btn_ok)
+        layout.addLayout(btn_row, 3, 0, 1, 2)
+        
+        if dlg.exec_() != QDialog.Accepted: return
+        
+        product_name = product_input.currentText() if isinstance(product_input, CmB) else product_input.text()
+        battery_v = float(volt_input.currentText() if isinstance(volt_input, CmB) else volt_input.text())
+        battery_mah = float(cap_input.currentText() if isinstance(cap_input, CmB) else cap_input.text())
+        
+        # Save settings
+        if isinstance(product_input, CmB):
+            products = [product_input.itemText(i) for i in range(product_input.count())]
+            if product_name and product_name not in products:
+                products.insert(0, product_name)
+            s.setValue("products", products[:20])
+        if isinstance(volt_input, CmB):
+            voltages = [volt_input.itemText(i) for i in range(volt_input.count())]
+            if str(battery_v) not in voltages:
+                voltages.insert(0, str(battery_v))
+            s.setValue("voltages", voltages[:10])
+        if isinstance(cap_input, CmB):
+            caps = [cap_input.itemText(i) for i in range(cap_input.count())]
+            if str(battery_mah) not in caps:
+                caps.insert(0, str(battery_mah))
+            s.setValue("capacities", caps[:10])
+        
+        # Generate report
+        self._do_generate_report(product_name, battery_v, battery_mah)
+
+    def _do_generate_report(self, product_name, battery_v, battery_mah):
+        """Generate the actual PDF report"""
+        if not self.sel_region_rect: return
+        r = self.sel_region_rect.getRegion()
+        t0, t1 = r[0], r[1]
+        idx = [i for i, t in enumerate(self.ts) if t0 <= t <= t1]
+        if len(idx) < 2:
+            QMessageBox.warning(self, "提示", "选区内数据不足")
+            return
+        
+        vr = [self.vs[i] for i in idx]
+        cr = [self.cs[i] for i in idx]
+        pr = [self.ps[i] for i in idx]
+        
+        dt = self.ts[idx[-1]] - self.ts[idx[0]]
+        avg_v = sum(vr) / len(vr)
+        avg_c = sum(cr) / len(cr)
+        avg_p = sum(pr) / len(pr)
+        min_v = min(vr)
+        min_c = min(cr)
+        max_v = max(vr)
+        max_c = max(cr)
+        max_p = max(pr)
+        
+        charge = avg_c * dt / 3600 * 1000  # μAh
+        energy = avg_p * dt / 3600  # μWh
+        
+        # Estimated battery life
+        avg_c_mah = avg_c / 1000  # mA
+        if avg_c_mah > 0:
+            est_hours = battery_mah / avg_c_mah
+            est_days = est_hours / 24
+            est_int_days = int(est_days)
+            est_int_hours = int(est_hours - est_int_days * 24)
+        else:
+            est_hours = 0
+            est_days = 0
+            est_int_days = 0
+            est_int_hours = 0
+        
+        # Create PDF
+        try:
+            from PyQt5.QtPrintSupport import QPrinter
+            from PyQt5.QtGui import QPainter, QFont, QPen
+        except:
+            QMessageBox.warning(self, "提示", "需要安装 reportlab 或 PyQt5.QtPrintSupport")
+            return
+        
+        fname, _ = QFileDialog.getSaveFileName(self, "保存报告", 
+            f"{product_name}_power_report.pdf", "PDF (*.pdf)")
+        if not fname: return
+        
+        from PyQt5.QtPrintSupport import QPrinter
+        from PyQt5.QtGui import QPainter, QFont, QPen, QColor
+        from PyQt5.QtCore import QRectF
+        
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setOutputFormat(QPrinter.PdfFormat)
+        printer.setOutputFileName(fname)
+        printer.setPageSize(QPrinter.A4)
+        
+        painter = QPainter()
+        if not painter.begin(printer):
+            QMessageBox.warning(self, "错误", "无法创建PDF文件")
+            return
+        
+        # Layout
+        page_w = printer.pageRect().width()
+        page_h = printer.pageRect().height()
+        margin = int(page_w * 0.08)
+        content_w = page_w - 2 * margin
+        y = margin
+        
+        # Helper functions
+        def draw_text(x, text, font_size=10, color=QColor(0,0,0), bold=False, align='left'):
+            f = QFont("Microsoft YaHei", font_size)
+            f.setBold(bold)
+            painter.setFont(f)
+            painter.setPen(color)
+            if align == 'center':
+                painter.drawText(QRectF(x, y, content_w, font_size * 2), Qt.AlignHCenter | Qt.AlignVCenter, text)
+            elif align == 'right':
+                painter.drawText(QRectF(x, y, content_w, font_size * 2), Qt.AlignRight | Qt.AlignVCenter, text)
+            else:
+                painter.drawText(QRectF(x, y, content_w, font_size * 2), Qt.AlignLeft | Qt.AlignVCenter, text)
+        
+        def draw_line(color=QColor(200,200,200)):
+            y_pos = y + 2
+            painter.setPen(QPen(color, 1))
+            painter.drawLine(margin, y_pos, page_w - margin, y_pos)
+        
+        def advance(h=20):
+            nonlocal y
+            y += h
+        
+        # Title
+        draw_text(margin, "Power", font_size=24, bold=True, align='center')
+        advance(30)
+        draw_text(margin, f"功耗测试报告", font_size=18, bold=True, align='center')
+        advance(30)
+        
+        # Device info
+        draw_text(margin, f"被测设备：{product_name}", font_size=12)
+        advance(25)
+        draw_line()
+        advance(10)
+        
+        # Main table header
+        col_w = content_w // 4
+        draw_text(margin, "", font_size=11, bold=True)
+        painter.setFont(QFont("Microsoft YaHei", 11))
+        painter.drawText(QRectF(margin + col_w, y, col_w, 22), Qt.AlignHCenter, "最小值")
+        painter.drawText(QRectF(margin + col_w*2, y, col_w, 22), Qt.AlignHCenter, "平均值")
+        painter.drawText(QRectF(margin + col_w*3, y, col_w, 22), Qt.AlignHCenter, "最大值")
+        advance(25)
+        draw_line()
+        advance(5)
+        
+        # Data rows
+        rows = [
+            ("电流", f"{min_c:.3f} mA", f"{avg_c:.3f} mA", f"{max_c:.3f} mA"),
+            ("电压", f"{min_v:.3f} V", f"{avg_v:.3f} V", f"{max_v:.3f} V"),
+            ("功率", f"{min_c*min_v:.3f} mW", f"{avg_p:.3f} mW", f"{max_p:.3f} mW"),
+        ]
+        for label, v1, v2, v3 in rows:
+            painter.setFont(QFont("Microsoft YaHei", 10))
+            painter.drawText(QRectF(margin, y, col_w, 20), Qt.AlignLeft, label)
+            painter.drawText(QRectF(margin + col_w, y, col_w, 20), Qt.AlignHCenter, v1)
+            painter.drawText(QRectF(margin + col_w*2, y, col_w, 20), Qt.AlignHCenter, v2)
+            painter.drawText(QRectF(margin + col_w*3, y, col_w, 20), Qt.AlignHCenter, v3)
+            advance(22)
+        
+        advance(10)
+        draw_line()
+        advance(10)
+        
+        # Estimated results section
+        draw_text(margin, "预估结果", font_size=14, bold=True)
+        advance(25)
+        
+        # Energy section
+        draw_text(margin, "能量累计", font_size=11, bold=True)
+        advance(20)
+        
+        # 3.7V battery row
+        draw_text(margin, f"{battery_v}V电池", font_size=10)
+        draw_text(margin + content_w * 0.35, f"{charge:.3f} μAh", font_size=10)
+        draw_text(margin + content_w * 0.65, f"{energy:.3f} μWh", font_size=10)
+        advance(20)
+        
+        # Time projection
+        draw_text(margin, "本次测试", font_size=10)
+        draw_text(margin + content_w * 0.25, "1天", font_size=10)
+        draw_text(margin + content_w * 0.40, "30天", font_size=10)
+        advance(20)
+        
+        e_1d = energy * 86400 / dt if dt > 0 else 0
+        e_30d = e_1d * 30
+        draw_text(margin + content_w * 0.25, f"{e_1d/1000:.3f} mWh", font_size=10)
+        draw_text(margin + content_w * 0.40, f"{e_30d/1000:.3f} mWh", font_size=10)
+        advance(20)
+        
+        # Battery life estimate
+        draw_text(margin, f"预计{battery_mah}mAh电量，可用{est_int_days}天{est_int_hours}小时", font_size=10)
+        advance(20)
+        
+        # Report info
+        draw_line()
+        advance(10)
+        draw_text(margin, f"报告测试时长：{dt:.3f}秒", font_size=9)
+        advance(15)
+        draw_text(margin, f"报告生成时间：{datetime.now().strftime('%Y/%m/%d %H:%M:%S')}", font_size=9)
+        
+        painter.end()
+        
+        QMessageBox.information(self, "生成成功", f"测试报告已保存到:\n{fname}")
+        logger.info(f"测试报告: {fname}")
+        # Open the file
+        os.startfile(fname)
         if self.act_mode.text()=="切换到合并模式":
             self.act_mode.setText("切换到双波形模式")
             self.pc.hide(); self.pv.hide(); self.pm.show()
