@@ -327,6 +327,7 @@ class Main(QMainWindow):
             self.pm = pg.PlotWidget(axisItems={'bottom': self.time_axis_m})
         else:
             self.pm = pg.PlotWidget()
+        self.pm.setMouseTracking(True)
         self.pm.setBackground("#11111b"); self.pm.showGrid(x=True,y=True,alpha=0.1)
         self.pm.setLabel("left","电流 (mA)",color="#89b4fa"); self.pm.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
         self.pm.setTitle("电压 / 电流 波形",color="#cdd6f4",size="12pt")
@@ -375,10 +376,13 @@ class Main(QMainWindow):
             self.pc = pg.PlotWidget(axisItems={'bottom': self.time_axis_c})
         else:
             self.pc = pg.PlotWidget()
+        self.pc.setMouseTracking(True)
         self.pc.setBackground("#11111b"); self.pc.showGrid(x=True,y=True,alpha=0.1)
         self.pc.setLabel("left","电流 (mA)",color="#6c7086"); self.pc.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
         self.pc.setTitle("电流波形",color="#cdd6f4",size="12pt")
         self._cn_menu(self.pc)
+        # Set ViewBox limits to prevent negative values
+        self.pc.plotItem.vb.setLimits(xMin=0, yMin=0)
         self.cc=self.pc.plot(pen=pg.mkPen("#89b4fa",width=2),fillLevel=0,brush=pg.mkBrush(137,180,250,40))
         self.vc=pg.InfiniteLine(90,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.hc=pg.InfiniteLine(0,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
@@ -398,10 +402,13 @@ class Main(QMainWindow):
             self.pv = pg.PlotWidget(axisItems={'bottom': self.time_axis_v})
         else:
             self.pv = pg.PlotWidget()
+        self.pv.setMouseTracking(True)
         self.pv.setBackground("#11111b"); self.pv.showGrid(x=True,y=True,alpha=0.1)
         self.pv.setLabel("left","电压 (V)",color="#6c7086"); self.pv.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
         self.pv.setTitle("电压波形",color="#cdd6f4",size="12pt")
         self._cn_menu(self.pv)
+        # Set ViewBox limits to prevent negative values
+        self.pv.plotItem.vb.setLimits(xMin=0, yMin=0)
         self.cv=self.pv.plot(pen=pg.mkPen("#f38ba8",width=2))
         self.vvl=pg.InfiniteLine(90,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.hvl=pg.InfiniteLine(0,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
@@ -527,12 +534,15 @@ class Main(QMainWindow):
         r = self.sel_region_rect.getRegion()
         return r[0], r[1]
 
-    def _near_edge(self, plot, x, threshold=2.0):
+    def _near_edge(self, plot, x, threshold=5.0):
         """Check if x is near a selection edge, return 'left', 'right', or None"""
         t0, t1 = self._get_sel_edges(plot)
         if t0 is None: return None
         vr = plot.plotItem.vb.viewRange()[0]
-        scale = (vr[1] - vr[0]) / plot.width() if plot.width() > 0 else 1
+        # Convert pixel threshold to data units
+        plot_width = plot.width() - plot.plotItem.vb.width()  # subtract axis width
+        if plot_width <= 0: return None
+        scale = (vr[1] - vr[0]) / plot_width
         thr = threshold * scale
         if abs(x - t0) < thr: return 'left'
         if abs(x - t1) < thr: return 'right'
@@ -777,7 +787,7 @@ class Main(QMainWindow):
         """Minimize analysis window to bottom-left corner"""
         if hasattr(self, 'analysis_win') and self.analysis_win:
             self.analysis_win.hide()
-            # Create restore button at bottom-left
+            # Create or reuse restore button at bottom-left
             if not hasattr(self, 'analysis_mini_btn') or not self.analysis_mini_btn:
                 self.analysis_mini_btn = QPushButton("▲", self)
                 self.analysis_mini_btn.setFixedSize(40, 40)
@@ -793,12 +803,14 @@ class Main(QMainWindow):
             self.analysis_mini_btn.move(10, self.height() - 50)
             self.analysis_mini_btn.show()
             self.analysis_mini_btn.raise_()
+            self.analysis_mini_btn.setFocus()
     
     def _restore_analysis(self):
         """Restore analysis window from minimized state"""
         if hasattr(self, 'analysis_win') and self.analysis_win:
             self.analysis_win.show()
             self.analysis_win.raise_()
+            self.analysis_win.setFocus()
         if hasattr(self, 'analysis_mini_btn') and self.analysis_mini_btn:
             self.analysis_mini_btn.hide()
     
