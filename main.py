@@ -540,21 +540,23 @@ class Main(QMainWindow):
         
         # Floating action buttons (shown when selection exists)
         self.floating_btns = QWidget(self)
+        self.floating_btns.setFixedWidth(220)
         self.floating_btns.setStyleSheet("""
             QWidget { background: rgba(30,30,46,220); border-radius: 8px; }
             QPushButton { background: #313244; color: #cdd6f4; border: 1px solid #45475a;
-                border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: bold;
-                font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+                border-radius: 6px; padding: 6px 10px; font-size: 11px; font-weight: bold; }
             QPushButton:hover { background: #45475a; }
         """)
         btn_layout = QHBoxLayout(self.floating_btns)
-        btn_layout.setContentsMargins(8, 6, 8, 6)
-        btn_layout.setSpacing(8)
+        btn_layout.setContentsMargins(6, 4, 6, 4)
+        btn_layout.setSpacing(6)
         btn_screenshot = QPushButton("截图区域")
+        btn_screenshot.setFixedWidth(90)
         btn_screenshot.clicked.connect(self._screenshot_region)
         btn_layout.addWidget(btn_screenshot)
-        btn_report = QPushButton("生成测试报告")
-        btn_report.setStyleSheet("QPushButton { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; }")
+        btn_report = QPushButton("生成报告")
+        btn_report.setFixedWidth(90)
+        btn_report.setStyleSheet("QPushButton { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }")
         btn_report.clicked.connect(self._generate_report)
         btn_layout.addWidget(btn_report)
         self.floating_btns.hide()
@@ -636,6 +638,7 @@ class Main(QMainWindow):
         if hasattr(self, 'analysis_mini_btn') and self.analysis_mini_btn:
             self.analysis_mini_btn.close()
             self.analysis_mini_btn = None
+        self.floating_btns.hide()
         self.statusBar().showMessage("选区已清空")
 
     def _get_active_plot(self):
@@ -767,14 +770,10 @@ class Main(QMainWindow):
         self._position_floating_btns(plot)
 
     def _position_floating_btns(self, plot):
-        """Position floating buttons at top-right of plot"""
-        if plot:
-            vr = plot.plotItem.vb.viewRange()
-            scene_pos = plot.plotItem.vb.mapViewToScene(pg.Point(vr[0][1], vr[1][1]))
-            global_pos = self.mapToGlobal(scene_pos.toPoint())
-            self.floating_btns.move(global_pos.x() - self.floating_btns.width() - 10, global_pos.y() + 10)
-            self.floating_btns.show()
-            self.floating_btns.raise_()
+        """Position floating buttons at top-right of main window"""
+        self.floating_btns.move(self.width() - self.floating_btns.width() - 10, 10)
+        self.floating_btns.show()
+        self.floating_btns.raise_()
 
     def _on_sel_region_changed(self):
         """Update analysis when selection region is resized"""
@@ -927,13 +926,14 @@ class Main(QMainWindow):
             self.analysis_mini_btn.hide()
     
     def _close_analysis(self):
-        """Close analysis window and sync toggle to off"""
+        """Close analysis window and hide floating buttons"""
         if hasattr(self, 'analysis_win') and self.analysis_win:
             self.analysis_win.close()
             self.analysis_win = None
         if hasattr(self, 'analysis_mini_btn') and self.analysis_mini_btn:
             self.analysis_mini_btn.close()
             self.analysis_mini_btn = None
+        self.floating_btns.hide()
         # Sync toggle to off
         if self.btn_region.isChecked():
             self.btn_region.setChecked(False)
@@ -1332,61 +1332,55 @@ class Main(QMainWindow):
         from PyQt5.QtPrintSupport import QPrinter
         from PyQt5.QtGui import QTextDocument
         
-        html = f"""
-        <html><head><style>
-        body {{ font-family: "Microsoft YaHei", "SimSun", sans-serif; color: #000; }}
-        .title {{ text-align: center; font-size: 28px; font-weight: bold; margin: 20px 0 5px 0; }}
-        .ver {{ text-align: center; font-size: 9px; color: #666; margin-bottom: 5px; }}
-        .subtitle {{ text-align: center; font-size: 20px; font-weight: bold; margin: 10px 0 15px 0; }}
-        .device {{ font-size: 12px; margin-bottom: 10px; }}
-        table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
-        th, td {{ border: 1px solid #ccc; padding: 6px 12px; text-align: center; font-size: 11px; }}
-        th {{ background: #f0f0f0; font-weight: bold; }}
-        td.label {{ text-align: left; font-weight: bold; width: 20%; }}
-        .section-title {{ font-size: 14px; font-weight: bold; margin: 15px 0 8px 0; }}
-        .sub-title {{ font-size: 12px; font-weight: bold; margin: 8px 0 5px 0; }}
-        .estimate {{ font-size: 11px; margin: 3px 0; }}
-        .footer {{ border-top: 1px solid #ccc; padding-top: 8px; margin-top: 15px; font-size: 10px; }}
-        .footer td {{ border: none; padding: 3px 12px; text-align: left; font-size: 10px; }}
-        </style></head><body>
+        e_1d_val = energy * 86400 / dt / 1000 if dt > 0 else 0
+        e_30d_val = e_1d_val * 30
         
-        <div class="title">Power</div>
-        <div class="ver">设备版本：1.3.0　　软件版本：3.0.0.0</div>
-        <div class="subtitle">功耗测试报告</div>
-        <div class="device">被测设备：{product_name}</div>
-        
-        <table>
-        <tr><th></th><th>最小值</th><th>平均值</th><th>最大值</th></tr>
-        <tr><td class="label">电流</td><td>{min_c:.3f} mA</td><td>{avg_c:.3f} mA</td><td>{max_c:.3f} mA</td></tr>
-        <tr><td class="label">电压</td><td>{min_v:.3f} V</td><td>{avg_v:.3f} V</td><td>{max_v:.3f} V</td></tr>
-        <tr><td class="label">功率</td><td>{min_p:.3f} mW</td><td>{avg_p:.3f} mW</td><td>{max_p:.3f} mW</td></tr>
-        </table>
-        
-        <div class="section-title">预估结果</div>
-        <div class="sub-title">能量累计</div>
-        <div class="estimate">{battery_v}V电池</div>
-        <table>
-        <tr><td>{charge:.3f} μAh</td><td>{energy:.3f} μWh</td><td></td></tr>
-        </table>
-        
-        <table>
-        <tr><th>本次测试</th><th>1天</th><th>30天</th></tr>
-        <tr><td>{charge:.3f} μAh</td><td>{e_1d:.3f} μWh</td><td>{e_30d:.3f} μWh</td></tr>
-        <tr><td></td><td>{charge_mah:.3f} mAh</td><td>{charge_mah*30:.3f} mAh</td></tr>
-        </table>
-        
-        <div class="estimate">预计{battery_mah}mAh电量，可用{est_int_days}天{est_int_hours}小时</div>
-        
-        <div class="footer">
-        <table>
-        <tr><td>报告测试时长</td><td>{dur}</td></tr>
-        <tr><td>报告生成时间</td><td>{gen_time}</td></tr>
-        </table>
-        </div>
-        
-        </body></html>
-        """.replace("{e_1d:.3f} μWh", f"{energy*86400/dt/1000:.3f} mWh" if dt > 0 else "0 mWh") \
-            .replace("{e_30d:.3f} μWh", f"{energy*86400*30/dt/1000:.3f} mWh" if dt > 0 else "0 mWh")
+        html = f"""<html><head><style>
+body {{ font-family: "Microsoft YaHei", "SimSun", sans-serif; color: #000; margin: 0; padding: 20px; }}
+h1 {{ text-align: center; font-size: 26px; margin: 10px 0 3px 0; }}
+.ver {{ text-align: center; font-size: 9px; color: #666; margin: 3px 0; }}
+h2 {{ text-align: center; font-size: 18px; margin: 8px 0 12px 0; }}
+.device {{ font-size: 12px; margin-bottom: 8px; }}
+table {{ width: 100%; border-collapse: collapse; margin: 8px 0; }}
+th, td {{ border: 1px solid #999; padding: 5px 10px; text-align: center; font-size: 11px; }}
+th {{ background: #e8e8e8; font-weight: bold; }}
+td.left {{ text-align: left; font-weight: bold; }}
+.sec {{ font-size: 13px; font-weight: bold; margin: 12px 0 6px 0; }}
+.sub {{ font-size: 11px; margin: 4px 0; }}
+.est {{ font-size: 12px; font-weight: bold; margin: 8px 0; }}
+.foot {{ border-top: 2px solid #999; padding-top: 6px; margin-top: 12px; }}
+.foot td {{ border: none; padding: 2px 8px; text-align: left; font-size: 10px; }}
+</style></head><body>
+<h1>Power</h1>
+<div class="ver">设备版本：1.3.0　　软件版本：3.0.0.0</div>
+<h2>功耗测试报告</h2>
+<div class="device">被测设备：{product_name}</div>
+<table>
+<tr><th></th><th>最小值</th><th>平均值</th><th>最大值</th></tr>
+<tr><td class="left">电流</td><td>{min_c:.3f} mA</td><td>{avg_c:.3f} mA</td><td>{max_c:.3f} mA</td></tr>
+<tr><td class="left">电压</td><td>{min_v:.3f} V</td><td>{avg_v:.3f} V</td><td>{max_v:.3f} V</td></tr>
+<tr><td class="left">功率</td><td>{min_p:.3f} mW</td><td>{avg_p:.3f} mW</td><td>{max_p:.3f} mW</td></tr>
+</table>
+<div class="sec">预估结果</div>
+<div class="sub">能量累计</div>
+<div class="sub">{battery_v}V电池</div>
+<table>
+<tr><th>电量</th><th>能量</th></tr>
+<tr><td>{charge:.3f} μAh</td><td>{energy:.3f} μWh</td></tr>
+</table>
+<table>
+<tr><th>本次测试</th><th>1天</th><th>30天</th></tr>
+<tr><td>{charge:.3f} μAh</td><td>{e_1d_val:.3f} mWh</td><td>{e_30d_val:.3f} mWh</td></tr>
+<tr><td>{charge_mah:.3f} mAh</td><td>{charge_mah:.3f} mAh</td><td>{charge_mah*30:.3f} mAh</td></tr>
+</table>
+<div class="est">预计{battery_mah}mAh电量，可用{est_int_days}天{est_int_hours}小时</div>
+<div class="foot">
+<table>
+<tr><td>报告测试时长</td><td>{dur}</td></tr>
+<tr><td>报告生成时间</td><td>{gen_time}</td></tr>
+</table>
+</div>
+</body></html>"""
         
         printer = QPrinter(QPrinter.HighResolution)
         printer.setOutputFormat(QPrinter.PdfFormat)
