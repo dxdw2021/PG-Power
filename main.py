@@ -475,6 +475,7 @@ class Main(QMainWindow):
         menu.addAction("框选模式", lambda: pw.plotItem.vb.setMouseMode(pg.ViewBox.RectMode))
         menu.addSeparator()
         menu.addAction("清空选区", self._clear_selection)
+        menu.addAction("清空数据", self._clear)
         pw.plotItem.vb.menu = menu
 
     def _clear_selection(self):
@@ -494,6 +495,9 @@ class Main(QMainWindow):
         self.sel_start = None
         if hasattr(self, 'analysis_win') and self.analysis_win:
             self.analysis_win.close()
+        if hasattr(self, 'analysis_mini_btn') and self.analysis_mini_btn:
+            self.analysis_mini_btn.close()
+            self.analysis_mini_btn = None
         self.statusBar().showMessage("选区已清空")
 
     def _get_active_plot(self):
@@ -511,6 +515,8 @@ class Main(QMainWindow):
             if plot and plot.sceneBoundingRect().contains(pos):
                 mp=plot.plotItem.vb.mapSceneToView(pos)
                 if self.sel_start is None:
+                    # Auto-clear old selection before creating new one
+                    self._clear_selection()
                     self.sel_start=mp.x()
                     self.statusBar().showMessage(f"已选择起点: {mp.x():.1f}s，请点击终点")
                     self._draw_sel_line(plot, mp.x())
@@ -584,14 +590,15 @@ class Main(QMainWindow):
         """Show independent analysis window"""
         if hasattr(self, 'analysis_win') and self.analysis_win:
             self.analysis_win.close()
+        if hasattr(self, 'analysis_mini_btn') and self.analysis_mini_btn:
+            self.analysis_mini_btn.close()
         
         idx = [i for i, t in enumerate(self.ts) if t0 <= t <= t1]
         cr = [self.cs[i] for i in idx] if idx else [0]
         
         self.analysis_win = QMainWindow(self)
-        self.analysis_win.setWindowTitle("选区分析")
         self.analysis_win.setMinimumSize(280, 320)
-        self.analysis_win.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
+        self.analysis_win.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         
         central = QWidget()
         self.analysis_win.setCentralWidget(central)
@@ -630,10 +637,17 @@ class Main(QMainWindow):
         
         layout.addStretch()
         
-        # Close button
+        # Minimize and Close buttons
+        btn_row = QHBoxLayout()
+        btn_mini = QPushButton("-")
+        btn_mini.setFixedSize(30, 30)
+        btn_mini.clicked.connect(self._minimize_analysis)
+        btn_row.addWidget(btn_mini)
+        btn_row.addStretch()
         btn_close = QPushButton("关闭")
-        btn_close.clicked.connect(self.analysis_win.close)
-        layout.addWidget(btn_close)
+        btn_close.clicked.connect(self._close_analysis)
+        btn_row.addWidget(btn_close)
+        layout.addLayout(btn_row)
         
         # Position near the selection region
         plot = self._get_active_plot()
@@ -656,6 +670,43 @@ class Main(QMainWindow):
         """)
         self.analysis_win.show()
         self.analysis_win.raise_()
+    
+    def _minimize_analysis(self):
+        """Minimize analysis window to bottom-left corner"""
+        if hasattr(self, 'analysis_win') and self.analysis_win:
+            self.analysis_win.hide()
+            # Create restore button at bottom-left
+            if not hasattr(self, 'analysis_mini_btn') or not self.analysis_mini_btn:
+                self.analysis_mini_btn = QPushButton("▲", self)
+                self.analysis_mini_btn.setFixedSize(40, 40)
+                self.analysis_mini_btn.setStyleSheet("""
+                    QPushButton {
+                        background: #89b4fa; color: #1e1e2e; border: none;
+                        border-radius: 20px; font-size: 16px; font-weight: bold;
+                    }
+                    QPushButton:hover { background: #74a8fa; }
+                """)
+                self.analysis_mini_btn.clicked.connect(self._restore_analysis)
+            # Position at bottom-left of main window
+            self.analysis_mini_btn.move(10, self.height() - 50)
+            self.analysis_mini_btn.show()
+            self.analysis_mini_btn.raise_()
+    
+    def _restore_analysis(self):
+        """Restore analysis window from minimized state"""
+        if hasattr(self, 'analysis_win') and self.analysis_win:
+            self.analysis_win.show()
+            self.analysis_win.raise_()
+        if hasattr(self, 'analysis_mini_btn') and self.analysis_mini_btn:
+            self.analysis_mini_btn.hide()
+    
+    def _close_analysis(self):
+        """Close analysis window and mini button"""
+        if hasattr(self, 'analysis_win') and self.analysis_win:
+            self.analysis_win.close()
+        if hasattr(self, 'analysis_mini_btn') and self.analysis_mini_btn:
+            self.analysis_mini_btn.close()
+            self.analysis_mini_btn = None
 
     # ===== Tab2: Settings =====
     def _init_settings(self, parent):
