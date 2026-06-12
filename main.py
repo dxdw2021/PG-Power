@@ -197,14 +197,14 @@ class RegionAnalysisPanel(QWidget):
         line.setStyleSheet(f"background-color: {color};")
         layout.addWidget(line)
         
-        # Values - centered with consistent padding
+        # Values - right aligned with consistent padding
         value_layout = QVBoxLayout()
         value_layout.setSpacing(4)
         value_layout.setContentsMargins(4, 4, 4, 0)
         value_labels = []
         for text in value_texts:
             lb = QLabel(text)
-            lb.setAlignment(Qt.AlignCenter)
+            lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             lb.setStyleSheet(f"color: {color}; font-size: 26px; font-family: Consolas; font-weight: bold; background: transparent;")
             value_layout.addWidget(lb)
             value_labels.append(lb)
@@ -1159,6 +1159,17 @@ class Main(QMainWindow):
             if hasattr(self, 'analysis_win') and self.analysis_win:
                 self.analysis_win.close()
                 self.analysis_win = None
+
+    def _mode(self):
+        if self.act_mode.text()=="切换到合并模式":
+            self.act_mode.setText("切换到双波形模式")
+            self.pc.hide(); self.pv.hide(); self.pm.show()
+            # Auto-adapt off for merged mode
+            self.chk_auto.setChecked(False)
+            self._auto_adapt()
+        else:
+            self.act_mode.setText("切换到合并模式")
+            self.pm.hide(); self.pc.show(); self.pv.show()
 
     def _screenshot_region(self):
         """Screenshot the current plot with selection region"""
