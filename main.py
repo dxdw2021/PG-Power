@@ -266,9 +266,9 @@ class Main(QMainWindow):
 
         # Instant values
         g1=QGroupBox("当前数据"); gl1=QVBoxLayout(g1); gl1.setSpacing(2)
-        self.lb_ic=QLabel("0.000 mA"); self.lb_ic.setStyleSheet(f"color:#89b4fa;font-size:{fs_big};font-weight:bold")
-        self.lb_iv=QLabel("0.000 V"); self.lb_iv.setStyleSheet(f"color:#f38ba8;font-size:{fs_big};font-weight:bold")
-        self.lb_ip=QLabel("0.000 mW"); self.lb_ip.setStyleSheet(f"color:#f9e2af;font-size:{fs_big};font-weight:bold")
+        self.lb_ic=QLabel("0.000 mA"); self.lb_ic.setStyleSheet(f"color:#3b82f6;font-size:{fs_big};font-weight:bold;background:transparent")
+        self.lb_iv=QLabel("0.000 V"); self.lb_iv.setStyleSheet(f"color:#e11d48;font-size:{fs_big};font-weight:bold;background:transparent")
+        self.lb_ip=QLabel("0.000 mW"); self.lb_ip.setStyleSheet(f"color:#d97706;font-size:{fs_big};font-weight:bold;background:transparent")
         gl1.addWidget(self.lb_ic); gl1.addWidget(self.lb_iv); gl1.addWidget(self.lb_ip); ll.addWidget(g1)
 
         # Average
@@ -280,10 +280,10 @@ class Main(QMainWindow):
 
         # Cumulative
         g3=QGroupBox("累计数据"); gl3=QVBoxLayout(g3); gl3.setSpacing(2)
-        self.lb_mx=QLabel("最大电流: -- mA"); self.lb_mx.setStyleSheet("color:#f38ba8")
-        self.lb_mn=QLabel("最小电流: -- mA"); self.lb_mn.setStyleSheet("color:#a6e3a1")
-        self.lb_en=QLabel("总耗电: -- mWh"); self.lb_en.setStyleSheet("color:#f9e2af")
-        self.lb_ah=QLabel("累计电量: -- mAh"); self.lb_ah.setStyleSheet("color:#89dceb")
+        self.lb_mx=QLabel("最大电流: -- mA"); self.lb_mx.setStyleSheet("color:#e11d48;background:transparent")
+        self.lb_mn=QLabel("最小电流: -- mA"); self.lb_mn.setStyleSheet("color:#16a34a;background:transparent")
+        self.lb_en=QLabel("总耗电: -- mWh"); self.lb_en.setStyleSheet("color:#d97706;background:transparent")
+        self.lb_ah=QLabel("累计电量: -- mAh"); self.lb_ah.setStyleSheet("color:#0891b2;background:transparent")
         self.lb_tm=QLabel("总时长: 00:00:00")
         self.lb_n=QLabel("采样点数: 0")
         self.btn_unit=QPushButton("切换 mWh/Wh"); self.btn_unit.setObjectName("save")
