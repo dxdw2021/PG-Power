@@ -145,6 +145,85 @@ def get_themes(is_low_res):
     """
     return DARK, LIGHT
 
+class RegionAnalysisPanel(QWidget):
+    """选区分析面板"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(260)
+        self.setStyleSheet("background-color: #121212;")
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(16)
+
+        self.avg_block = self._create_block("∿", "平均", "#77ff77", ["-- V", "-- mA", "-- mW"])
+        main_layout.addWidget(self.avg_block)
+        self.max_block = self._create_block("↑", "最高", "#ff6666", ["-- V", "-- mA"])
+        main_layout.addWidget(self.max_block)
+        self.min_block = self._create_block("↓", "最低", "#77bbff", ["-- V", "-- mA"])
+        main_layout.addWidget(self.min_block)
+        self.energy_block = self._create_block("⚡", "电量", "#e6b87a", ["-- μAh", "-- μWh"])
+        main_layout.addWidget(self.energy_block)
+        self.time_block = self._create_block("⟳", "时间", "#aaaaaa", ["-- 秒", "-- Hz"])
+        main_layout.addWidget(self.time_block)
+        main_layout.addStretch()
+
+    def _create_block(self, icon_text, title, color, value_texts):
+        block = QWidget()
+        layout = QVBoxLayout(block)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        top_row = QHBoxLayout()
+        top_row.setSpacing(6)
+        icon_label = QLabel(icon_text)
+        icon_label.setStyleSheet(f"color: {color}; font-size: 18px;")
+        icon_label.setFixedWidth(24)
+        title_label = QLabel(title)
+        title_label.setStyleSheet(f"color: {color}; font-size: 20px; font-weight: bold;")
+        sub_label = QLabel("选中区域")
+        sub_label.setStyleSheet("color: #888888; font-size: 14px;")
+        top_row.addWidget(icon_label)
+        top_row.addWidget(title_label)
+        top_row.addStretch()
+        top_row.addWidget(sub_label)
+        layout.addLayout(top_row)
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet(f"background-color: {color}; max-height: 1px;")
+        layout.addWidget(line)
+        value_layout = QVBoxLayout()
+        value_layout.setSpacing(4)
+        value_labels = []
+        for text in value_texts:
+            lb = QLabel(text)
+            lb.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            lb.setStyleSheet(f"color: {color}; font-size: 28px; font-family: Consolas;")
+            value_layout.addWidget(lb)
+            value_labels.append(lb)
+        layout.addLayout(value_layout)
+        block.value_labels = value_labels
+        return block
+
+    def update_avg(self, volt, curr, power):
+        self.avg_block.value_labels[0].setText(f"{volt:.4f} V")
+        self.avg_block.value_labels[1].setText(f"{curr:.4f} mA")
+        self.avg_block.value_labels[2].setText(f"{power:.4f} mW")
+
+    def update_max(self, volt, curr):
+        self.max_block.value_labels[0].setText(f"{volt:.4f} V")
+        self.max_block.value_labels[1].setText(f"{curr:.4f} mA")
+
+    def update_min(self, volt, curr):
+        self.min_block.value_labels[0].setText(f"{volt:.4f} V")
+        self.min_block.value_labels[1].setText(f"{curr:.4f} mA")
+
+    def update_energy(self, charge_uah, energy_uwh):
+        self.energy_block.value_labels[0].setText(f"{charge_uah:.4f} μAh")
+        self.energy_block.value_labels[1].setText(f"{energy_uwh:.4f} μWh")
+
+    def update_time(self, duration_sec, freq_hz):
+        self.time_block.value_labels[0].setText(f"{duration_sec:.4f} 秒")
+        self.time_block.value_labels[1].setText(f"{freq_hz:.4f} Hz")
+
 class TimeAxisItem(pg.AxisItem):
     """Custom axis item that displays system time"""
     def __init__(self, *args, **kwargs):
@@ -192,6 +271,7 @@ class Main(QMainWindow):
         self.scroll_pos=0
         self.time_mode=0  # 0=relative seconds, 1=system time
         self.sample_interval=50  # ms
+        self.data_font_size=12  # px for average/cumulative labels
         self.analysis_win=None
         self.setMouseTracking(True)
 
@@ -230,6 +310,11 @@ class Main(QMainWindow):
         self.act_region=QAction("选区分析:关",self); self.act_region.triggered.connect(self._toggle_region_tb); tb.addAction(self.act_region)
         # Screenshot
         self.act_screenshot=QAction("截图",self); self.act_screenshot.triggered.connect(self._screenshot); tb.addAction(self.act_screenshot)
+        # Voltage visibility toggle
+        self.act_voltage=QAction("电压:显示",self); self.act_voltage.setCheckable(True)
+        self.act_voltage.setChecked(True); self.act_voltage.triggered.connect(self._toggle_voltage)
+        tb.addAction(self.act_voltage)
+        self.show_voltage=True
 
         tabs=QTabWidget(); self.setCentralWidget(tabs)
         w1=QWidget(); tabs.addTab(w1,"数据与波形")
@@ -275,19 +360,20 @@ class Main(QMainWindow):
 
         # Average
         g2=QGroupBox("平均数据"); gl2=QVBoxLayout(g2); gl2.setSpacing(2)
-        self.lb_ac=QLabel("平均电流: -- mA")
-        self.lb_av=QLabel("平均电压: -- V")
-        self.lb_ap=QLabel("平均功率: -- mW")
+        fs_data = f"{self.data_font_size}px"
+        self.lb_ac=QLabel("平均电流: -- mA"); self.lb_ac.setStyleSheet(f"color:#3b82f6;font-size:{fs_data};background:transparent")
+        self.lb_av=QLabel("平均电压: -- V"); self.lb_av.setStyleSheet(f"color:#e11d48;font-size:{fs_data};background:transparent")
+        self.lb_ap=QLabel("平均功率: -- mW"); self.lb_ap.setStyleSheet(f"color:#d97706;font-size:{fs_data};background:transparent")
         gl2.addWidget(self.lb_ac); gl2.addWidget(self.lb_av); gl2.addWidget(self.lb_ap); ll.addWidget(g2)
 
         # Cumulative
         g3=QGroupBox("累计数据"); gl3=QVBoxLayout(g3); gl3.setSpacing(2)
-        self.lb_mx=QLabel("最大电流: -- mA"); self.lb_mx.setStyleSheet("color:#e11d48;background:transparent")
-        self.lb_mn=QLabel("最小电流: -- mA"); self.lb_mn.setStyleSheet("color:#16a34a;background:transparent")
-        self.lb_en=QLabel("总耗电: -- mWh"); self.lb_en.setStyleSheet("color:#d97706;background:transparent")
-        self.lb_ah=QLabel("累计电量: -- mAh"); self.lb_ah.setStyleSheet("color:#0891b2;background:transparent")
-        self.lb_tm=QLabel("总时长: 00:00:00")
-        self.lb_n=QLabel("采样点数: 0")
+        self.lb_mx=QLabel("最大电流: -- mA"); self.lb_mx.setStyleSheet(f"color:#e11d48;font-size:{fs_data};background:transparent")
+        self.lb_mn=QLabel("最小电流: -- mA"); self.lb_mn.setStyleSheet(f"color:#16a34a;font-size:{fs_data};background:transparent")
+        self.lb_en=QLabel("总耗电: -- mWh"); self.lb_en.setStyleSheet(f"color:#d97706;font-size:{fs_data};background:transparent")
+        self.lb_ah=QLabel("累计电量: -- mAh"); self.lb_ah.setStyleSheet(f"color:#0891b2;font-size:{fs_data};background:transparent")
+        self.lb_tm=QLabel("总时长: 00:00:00"); self.lb_tm.setStyleSheet(f"font-size:{fs_data};background:transparent")
+        self.lb_n=QLabel("采样点数: 0"); self.lb_n.setStyleSheet(f"font-size:{fs_data};background:transparent")
         self.btn_unit=QPushButton("切换 mWh/Wh"); self.btn_unit.setObjectName("save")
         self.btn_unit.clicked.connect(self._switch_unit)
         gl3.addWidget(self.lb_mx); gl3.addWidget(self.lb_mn); gl3.addWidget(self.lb_en)
@@ -665,6 +751,7 @@ class Main(QMainWindow):
         avg_v=sum(vr)/len(vr); avg_c=sum(cr)/len(cr); avg_p=sum(pr)/len(pr)
         charge=sum(cr)/len(cr)*dt/3600*1000
         energy=sum(pr)/len(pr)*dt/3600
+        freq=len(idx)/dt if dt>0 else 0
 
         # Update tab analysis
         self.rv.setText(f"平均电压: {avg_v:.4f} V")
@@ -677,12 +764,12 @@ class Main(QMainWindow):
         self.rtm.setText(f"时长: {dt:.2f} 秒")
         self.rn.setText(f"采样点数: {len(idx)}")
 
-        # Show floating analysis window
-        self._show_floating_analysis(t0, t1, avg_v, avg_c, avg_p, charge, energy, dt, len(idx))
+        # Show floating analysis panel
+        self._show_floating_analysis(t0, t1, avg_v, avg_c, avg_p, charge, energy, dt, len(idx), freq)
         self.statusBar().showMessage(f"选区分析: {t0:.1f}s ~ {t1:.1f}s | 平均功率: {avg_p:.1f}mW | 能量: {energy:.2f}μWh")
 
-    def _show_floating_analysis(self, t0, t1, avg_v, avg_c, avg_p, charge, energy, dt, count):
-        """Show independent analysis window"""
+    def _show_floating_analysis(self, t0, t1, avg_v, avg_c, avg_p, charge, energy, dt, count, freq=0):
+        """Show independent analysis panel"""
         if hasattr(self, 'analysis_win') and self.analysis_win:
             self.analysis_win.close()
         if hasattr(self, 'analysis_mini_btn') and self.analysis_mini_btn:
@@ -690,6 +777,7 @@ class Main(QMainWindow):
         
         idx = [i for i, t in enumerate(self.ts) if t0 <= t <= t1]
         cr = [self.cs[i] for i in idx] if idx else [0]
+        vr = [self.vs[i] for i in idx] if idx else [0]
         
         self.analysis_win = QMainWindow(self)
         self.analysis_win.setMinimumSize(280, 320)
@@ -714,43 +802,23 @@ class Main(QMainWindow):
         central.mousePressEvent = _press
         central.mouseMoveEvent = _move
         central.mouseReleaseEvent = _release
+        
+        # New analysis panel
+        self.region_panel = RegionAnalysisPanel()
+        self.region_panel.update_avg(avg_v, avg_c, avg_p)
+        self.region_panel.update_max(max(vr), max(cr))
+        self.region_panel.update_min(min(vr), min(cr))
+        self.region_panel.update_energy(charge, energy)
+        self.region_panel.update_time(dt, freq)
+        
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(6)
-        
-        # Title
-        title = QLabel(f"选区: {t0:.1f}s ~ {t1:.1f}s")
-        title.setStyleSheet("color:#89b4fa;font-size:14px;font-weight:bold;padding:4px;")
-        layout.addWidget(title)
-        
-        # Separator
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color:#45475a;")
-        layout.addWidget(sep)
-        
-        # Stats
-        stats = [
-            (f"平均电压: {avg_v:.4f} V", "#e11d48"),
-            (f"平均电流: {avg_c:.2f} mA", "#3b82f6"),
-            (f"平均功率: {avg_p:.2f} mW", "#d97706"),
-            (f"最大电流: {max(cr):.2f} mA", "#e11d48"),
-            (f"最小电流: {min(cr):.2f} mA", "#16a34a"),
-            (f"电量: {charge:.4f} μAh", "#d97706"),
-            (f"能量: {energy:.4f} μWh", "#7c3aed"),
-            (f"时长: {dt:.2f} 秒", "#0891b2"),
-            (f"采样点数: {count}", "#6b7280"),
-        ]
-        
-        for text, color in stats:
-            lbl = QLabel(text)
-            lbl.setStyleSheet(f"color:{color};font-size:13px;padding:3px 6px;background:transparent")
-            layout.addWidget(lbl)
-        
-        layout.addStretch()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.region_panel)
         
         # Minimize and Close buttons
         btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(8, 0, 8, 4)
         btn_mini = QPushButton("-")
         btn_mini.setFixedSize(30, 30)
         btn_mini.clicked.connect(self._minimize_analysis)
@@ -922,6 +990,10 @@ class Main(QMainWindow):
         g4_lay.addWidget(QLabel("线条粗细:"),1,0)
         self.spin_lw=QDoubleSpinBox(); self.spin_lw.setRange(0.5,10); self.spin_lw.setValue(2); self.spin_lw.setSingleStep(0.5); self.spin_lw.setSuffix(" px")
         g4_lay.addWidget(self.spin_lw,1,1)
+        g4_lay.addWidget(QLabel("数据字体:"),2,0)
+        self.spin_font_size=QSpinBox(); self.spin_font_size.setRange(8,20); self.spin_font_size.setValue(12); self.spin_font_size.setSuffix(" px")
+        self.spin_font_size.valueChanged.connect(self._update_data_font_size)
+        g4_lay.addWidget(self.spin_font_size,2,1)
         right_col.addWidget(g4)
         right_col.addStretch()
         display_row.addLayout(right_col)
@@ -1002,6 +1074,10 @@ class Main(QMainWindow):
             self.btn_region.setText("关闭选区分析")
             self.act_region.setText("选区分析:开")
             self.statusBar().showMessage("选区分析已开启：左键点击第1个点设置起点，再点击第2个点设置终点")
+            # Auto-analyze existing selection if present
+            if self.sel_region_rect:
+                r = self.sel_region_rect.getRegion()
+                self._show_analysis(r[0], r[1])
         else:
             self.btn_region.setText("开启选区分析")
             self.act_region.setText("选区分析:关")
@@ -1013,6 +1089,10 @@ class Main(QMainWindow):
             self.act_region.setText("选区分析:开")
             self.btn_region.setChecked(True)
             self.btn_region.setText("关闭选区分析")
+            # Auto-analyze existing selection if present
+            if self.sel_region_rect:
+                r = self.sel_region_rect.getRegion()
+                self._show_analysis(r[0], r[1])
         else:
             self.act_region.setText("选区分析:关")
             self.btn_region.setChecked(False)
@@ -1358,6 +1438,20 @@ class Main(QMainWindow):
         else: self.setWindowFlags(Qt.Window|Qt.WindowStaysOnTopHint); self.act_float.setText("取消悬浮")
         self.show()
 
+    def _toggle_voltage(self):
+        """Toggle voltage waveform visibility in both merged and dual modes"""
+        self.show_voltage = self.act_voltage.isChecked()
+        self.act_voltage.setText("电压:显示" if self.show_voltage else "电压:隐藏")
+        # Merged mode: hide/show voltage curve and right axis
+        self.cm_v.setVisible(self.show_voltage)
+        self.pm.plotItem.getAxis('right').setVisible(self.show_voltage)
+        self.tvl_m.setVisible(self.show_voltage)
+        self.lmv.setVisible(self.show_voltage)
+        # Dual mode: hide/show voltage plot
+        self.pv.setVisible(self.show_voltage)
+        self.tvl.setVisible(self.show_voltage)
+        self.lvl.setVisible(self.show_voltage)
+
     def _toggle_theme(self):
         dark, light = get_themes(self.is_low_res)
         themes=[dark, light, dark]
@@ -1369,6 +1463,15 @@ class Main(QMainWindow):
         bg="#eff1f5" if self.theme_idx==1 else "#11111b"
         grid_c="#ccd0da" if self.theme_idx==1 else "#45475a"
         self.pm.setBackground(bg); self.pc.setBackground(bg); self.pv.setBackground(bg)
+
+    def _update_data_font_size(self, size):
+        self.data_font_size = size
+        fs = f"{size}px"
+        import re
+        for lbl in [self.lb_ac, self.lb_av, self.lb_ap, self.lb_mx, self.lb_mn, self.lb_en, self.lb_ah, self.lb_tm, self.lb_n]:
+            style = lbl.styleSheet()
+            style = re.sub(r'font-size:\d+px', f'font-size:{fs}', style)
+            lbl.setStyleSheet(style)
 
     def _load_settings(self):
         s=QSettings("PG-Power","settings")
@@ -1383,6 +1486,8 @@ class Main(QMainWindow):
         self.spin_vmin.setValue(s.value("v_min",0,type=float))
         self.spin_cache.setValue(s.value("cache",50000,type=int))
         self.spin_lw.setValue(s.value("line_width",2,type=float))
+        self.data_font_size=s.value("data_font_size",12,type=int)
+        self.spin_font_size.setValue(self.data_font_size)
         self.cb_coord.setCurrentIndex(s.value("coord",0,type=int))
         self.track_side=s.value("track_side","right")
         if self.track_side=="left": self.btn_tl.setStyleSheet("background:#a6e3a1;")
@@ -1407,6 +1512,7 @@ class Main(QMainWindow):
         s.setValue("v_min",self.spin_vmin.value())
         s.setValue("cache",self.spin_cache.value())
         s.setValue("line_width",self.spin_lw.value())
+        s.setValue("data_font_size",self.data_font_size)
         s.setValue("coord",self.cb_coord.currentIndex())
         s.setValue("track_side",self.track_side)
         s.setValue("screenshot_path",self.le_screenshot_path.text())
