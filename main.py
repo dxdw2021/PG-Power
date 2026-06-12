@@ -509,7 +509,7 @@ class Main(QMainWindow):
         self.sel_line.setPos(x)
 
     def _draw_sel_region(self, plot, t0, t1):
-        """Draw selection region rectangle"""
+        """Draw selection region rectangle (resizable)"""
         if self.sel_line:
             try: plot.removeItem(self.sel_line)
             except: pass
@@ -517,9 +517,16 @@ class Main(QMainWindow):
         if self.sel_region_rect:
             try: plot.removeItem(self.sel_region_rect)
             except: pass
-        self.sel_region_rect = pg.LinearRegionItem([t0, t1], movable=False,
+        self.sel_region_rect = pg.LinearRegionItem([t0, t1], movable=True,
             brush=pg.mkBrush(74, 158, 255, 50), pen=pg.mkPen(color="#4a9eff", width=1))
+        self.sel_region_rect.sigRegionChanged.connect(self._on_sel_region_changed)
         plot.addItem(self.sel_region_rect)
+
+    def _on_sel_region_changed(self):
+        """Update analysis when selection region is resized"""
+        if self.sel_region_rect is None: return
+        r = self.sel_region_rect.getRegion()
+        self._show_analysis(r[0], r[1])
 
     def _show_analysis(self,t0,t1):
         if not self.ts or t1-t0<0.5: 
@@ -551,78 +558,111 @@ class Main(QMainWindow):
         self.statusBar().showMessage(f"选区分析: {t0:.1f}s ~ {t1:.1f}s | 平均功率: {avg_p:.1f}mW | 能量: {energy:.2f}μWh")
 
     def _show_floating_analysis(self, t0, t1, avg_v, avg_c, avg_p, charge, energy, dt, count):
-        """Show floating analysis window near the selection"""
-        if hasattr(self, 'floating_tip') and self.floating_tip:
-            self.floating_tip.close()
+        """Show independent analysis window"""
+        if hasattr(self, 'analysis_win') and self.analysis_win:
+            self.analysis_win.close()
         
-        self.floating_tip = QWidget(self)
-        self.floating_tip.setStyleSheet("""
-            QWidget {
-                background-color: rgba(30, 30, 46, 230);
-                border: 1px solid #89b4fa;
-                border-radius: 8px;
-            }
-            QLabel {
-                color: #cdd6f4;
-                font-size: 12px;
-                padding: 2px 8px;
-                background: transparent;
-            }
-            QLabel#title {
-                color: #89b4fa;
-                font-size: 14px;
-                font-weight: bold;
-                padding: 4px 8px;
-            }
-            QLabel#value {
-                color: #a6e3a1;
-                font-weight: bold;
-            }
-        """)
+        idx = [i for i, t in enumerate(self.ts) if t0 <= t <= t1]
+        cr = [self.cs[i] for i in idx] if idx else [0]
         
-        layout = QVBoxLayout(self.floating_tip)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(4)
+        self.analysis_win = QMainWindow(self)
+        self.analysis_win.setWindowTitle("选区分析")
+        self.analysis_win.setMinimumSize(280, 320)
+        self.analysis_win.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
         
-        title = QLabel(f"选区分析 ({t0:.1f}s ~ {t1:.1f}s)")
-        title.setObjectName("title")
+        central = QWidget()
+        self.analysis_win.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(6)
+        
+        # Title
+        title = QLabel(f"选区: {t0:.1f}s ~ {t1:.1f}s")
+        title.setStyleSheet("color:#89b4fa;font-size:14px;font-weight:bold;padding:4px;")
         layout.addWidget(title)
         
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color: #45475a;")
+        sep.setStyleSheet("color:#45475a;")
         layout.addWidget(sep)
         
         # Stats
         stats = [
-            (f"平均电压: {avg_v:.3f} V", "#ff6b6b"),
-            (f"平均电流: {avg_c:.1f} mA", "#89b4fa"),
-            (f"平均功率: {avg_p:.1f} mW", "#a6e3a1"),
-            (f"电量: {charge:.2f} μAh", "#f9e2af"),
-            (f"能量: {energy:.2f} μWh", "#cba6f7"),
-            (f"时长: {dt:.2f} 秒 | {count}点", "#89dceb"),
+            (f"平均电压: {avg_v:.4f} V", "#e11d48"),
+            (f"平均电流: {avg_c:.2f} mA", "#3b82f6"),
+            (f"平均功率: {avg_p:.2f} mW", "#d97706"),
+            (f"最大电流: {max(cr):.2f} mA", "#e11d48"),
+            (f"最小电流: {min(cr):.2f} mA", "#16a34a"),
+            (f"电量: {charge:.4f} μAh", "#d97706"),
+            (f"能量: {energy:.4f} μWh", "#7c3aed"),
+            (f"时长: {dt:.2f} 秒", "#0891b2"),
+            (f"采样点数: {count}", "#6b7280"),
+        ]
+        
+        central = QWidget()
+        self.analysis_win.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(6)
+        
+        # Title
+        title = QLabel(f"选区: {t0:.1f}s ~ {t1:.1f}s")
+        title.setStyleSheet("color:#89b4fa;font-size:14px;font-weight:bold;padding:4px;")
+        layout.addWidget(title)
+        
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color:#45475a;")
+        layout.addWidget(sep)
+        
+        # Stats
+        stats = [
+            (f"平均电压: {avg_v:.4f} V", "#e11d48"),
+            (f"平均电流: {avg_c:.2f} mA", "#3b82f6"),
+            (f"平均功率: {avg_p:.2f} mW", "#d97706"),
+            (f"最大电流: {max(self.cs[self.ts.index(min(self.ts, key=lambda x:abs(x-t0))):self.ts.index(min(self.ts, key=lambda x:abs(x-t1)))+1]) if self.cs else 0:.2f} mA", "#e11d48"),
+            (f"最小电流: {min(self.cs[self.ts.index(min(self.ts, key=lambda x:abs(x-t0))):self.ts.index(min(self.ts, key=lambda x:abs(x-t1)))+1]) if self.cs else 0:.2f} mA", "#16a34a"),
+            (f"电量: {charge:.4f} μAh", "#d97706"),
+            (f"能量: {energy:.4f} μWh", "#7c3aed"),
+            (f"时长: {dt:.2f} 秒", "#0891b2"),
+            (f"采样点数: {count}", "#6b7280"),
         ]
         
         for text, color in stats:
             lbl = QLabel(text)
-            lbl.setStyleSheet(f"color: {color}; font-size: 12px; padding: 1px 4px;")
+            lbl.setStyleSheet(f"color:{color};font-size:13px;padding:3px 6px;background:transparent")
             layout.addWidget(lbl)
         
-        self.floating_tip.adjustSize()
+        layout.addStretch()
         
-        # Position near the selection region on the chart
-        plot=self._get_active_plot()
+        # Close button
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(self.analysis_win.close)
+        layout.addWidget(btn_close)
+        
+        # Position near the selection region
+        plot = self._get_active_plot()
         if plot:
             mid_x = (t0 + t1) / 2
             y_range = plot.plotItem.vb.viewRange()[1]
             mid_y = (y_range[0] + y_range[1]) / 2
             scene_pos = plot.plotItem.vb.mapViewToScene(pg.Point(mid_x, mid_y))
-            tab_pos = self.tab_wave.mapFromGlobal(self.mapToGlobal(scene_pos.toPoint()))
-            self.floating_tip.move(tab_pos.x() + 20, tab_pos.y() - 100)
+            global_pos = self.mapToGlobal(scene_pos.toPoint())
+            self.analysis_win.move(global_pos.x() + 30, global_pos.y() - 50)
         
-        self.floating_tip.show()
-        self.floating_tip.raise_()
+        self.analysis_win.setStyleSheet("""
+            QMainWindow { background: #1e1e2e; }
+            QWidget { background: #1e1e2e; }
+            QPushButton {
+                background: #313244; color: #cdd6f4; border: 1px solid #45475a;
+                border-radius: 6px; padding: 8px 16px; font-weight: bold;
+            }
+            QPushButton:hover { background: #45475a; }
+        """)
+        self.analysis_win.show()
+        self.analysis_win.raise_()
 
     # ===== Tab2: Settings =====
     def _init_settings(self, parent):
