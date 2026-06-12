@@ -192,6 +192,7 @@ class Main(QMainWindow):
         self.scroll_pos=0
         self.time_mode=0  # 0=relative seconds, 1=system time
         self.sample_interval=50  # ms
+        self.analysis_win=None
 
         # Test phases
         self.phases=[{"n":"开机","d":310,"v":5.0,"c":0.300,"s":0.020},
@@ -419,6 +420,7 @@ class Main(QMainWindow):
         self.sel_active=False; self.sel_start=None; self.sel_rect=None
         self.sel_region=None; self.sel_analysis=None
         self.sel_line=None; self.sel_region_rect=None
+        self.analysis_win=None
         self.user_scrolling=False; self.scroll_timer=QTimer(); self.scroll_timer.setSingleShot(True)
         self.scroll_timer.timeout.connect(lambda: setattr(self,'user_scrolling',False))
 
@@ -471,7 +473,28 @@ class Main(QMainWindow):
         menu.setStyleSheet("QMenu{background:#1e1e2e;color:#cdd6f4;border:1px solid #313244;}QMenu::item:selected{background:#313244;}")
         menu.addAction("平移模式", lambda: pw.plotItem.vb.setMouseMode(pg.ViewBox.PanMode))
         menu.addAction("框选模式", lambda: pw.plotItem.vb.setMouseMode(pg.ViewBox.RectMode))
+        menu.addSeparator()
+        menu.addAction("清空选区", self._clear_selection)
         pw.plotItem.vb.menu = menu
+
+    def _clear_selection(self):
+        """清空选区和分析窗口"""
+        if self.sel_region_rect:
+            plot = self._get_active_plot()
+            if plot:
+                try: plot.removeItem(self.sel_region_rect)
+                except: pass
+            self.sel_region_rect = None
+        if self.sel_line:
+            plot = self._get_active_plot()
+            if plot:
+                try: plot.removeItem(self.sel_line)
+                except: pass
+            self.sel_line = None
+        self.sel_start = None
+        if hasattr(self, 'analysis_win') and self.analysis_win:
+            self.analysis_win.close()
+        self.statusBar().showMessage("选区已清空")
 
     def _get_active_plot(self):
         """获取当前活动的绘图控件"""
@@ -594,36 +617,6 @@ class Main(QMainWindow):
             (f"平均功率: {avg_p:.2f} mW", "#d97706"),
             (f"最大电流: {max(cr):.2f} mA", "#e11d48"),
             (f"最小电流: {min(cr):.2f} mA", "#16a34a"),
-            (f"电量: {charge:.4f} μAh", "#d97706"),
-            (f"能量: {energy:.4f} μWh", "#7c3aed"),
-            (f"时长: {dt:.2f} 秒", "#0891b2"),
-            (f"采样点数: {count}", "#6b7280"),
-        ]
-        
-        central = QWidget()
-        self.analysis_win.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(6)
-        
-        # Title
-        title = QLabel(f"选区: {t0:.1f}s ~ {t1:.1f}s")
-        title.setStyleSheet("color:#89b4fa;font-size:14px;font-weight:bold;padding:4px;")
-        layout.addWidget(title)
-        
-        # Separator
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color:#45475a;")
-        layout.addWidget(sep)
-        
-        # Stats
-        stats = [
-            (f"平均电压: {avg_v:.4f} V", "#e11d48"),
-            (f"平均电流: {avg_c:.2f} mA", "#3b82f6"),
-            (f"平均功率: {avg_p:.2f} mW", "#d97706"),
-            (f"最大电流: {max(self.cs[self.ts.index(min(self.ts, key=lambda x:abs(x-t0))):self.ts.index(min(self.ts, key=lambda x:abs(x-t1)))+1]) if self.cs else 0:.2f} mA", "#e11d48"),
-            (f"最小电流: {min(self.cs[self.ts.index(min(self.ts, key=lambda x:abs(x-t0))):self.ts.index(min(self.ts, key=lambda x:abs(x-t1)))+1]) if self.cs else 0:.2f} mA", "#16a34a"),
             (f"电量: {charge:.4f} μAh", "#d97706"),
             (f"能量: {energy:.4f} μWh", "#7c3aed"),
             (f"时长: {dt:.2f} 秒", "#0891b2"),
