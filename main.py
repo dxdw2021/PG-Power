@@ -411,10 +411,18 @@ class Main(QMainWindow):
         self.pv.scene().sigMouseMoved.connect(self._mv)
         ml.addWidget(self.pv)
 
-        # Time slider
+        # Time slider with pause button
+        slider_row = QHBoxLayout()
+        self.btn_pause = QPushButton("⏸")
+        self.btn_pause.setFixedSize(30, 28)
+        self.btn_pause.setCheckable(True)
+        self.btn_pause.setToolTip("暂停/恢复自动滚动")
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        slider_row.addWidget(self.btn_pause)
         self.slider=QSlider(Qt.Horizontal); self.slider.setRange(0,100); self.slider.setValue(100)
         self.slider.valueChanged.connect(self._on_slider)
-        ml.addWidget(self.slider)
+        slider_row.addWidget(self.slider)
+        ml.addLayout(slider_row)
 
         # Selection state
         self.sel_active=False; self.sel_start=None; self.sel_rect=None
@@ -887,6 +895,9 @@ class Main(QMainWindow):
             self.chk_auto.setText("自动适应坐标")
             self.pm.plotItem.vb.enableAutoRange(axis=self.pm.plotItem.vb.YAxis)
             self.pm_vb2.enableAutoRange(axis=self.pm_vb2.YAxis)
+            # Set X axis minimum to 0
+            self.pm.plotItem.vb.enableAutoRange(axis=self.pm.plotItem.vb.XAxis, enable=False)
+            self.pm.plotItem.vb.setXRange(0, max(self.ts[-1] if self.ts else 10, 10), padding=0)
         else:
             self.chk_auto.setText("固定坐标")
             self.pm.plotItem.vb.enableAutoRange(axis=self.pm.plotItem.vb.YAxis, enable=False)
@@ -1047,7 +1058,9 @@ class Main(QMainWindow):
             # Auto scroll for merged
             if self.ts[-1]>60 and not self.user_scrolling:
                 vb=self.pm.plotItem.vb; vr=vb.viewRange()[0]
-                if self.ts[-1] >= vr[1]-5: vb.setXRange(self.ts[-1]-60,self.ts[-1],padding=0)
+                if self.ts[-1] >= vr[1]-5:
+                    x_min=max(0, self.ts[-1]-60)
+                    vb.setXRange(x_min,self.ts[-1],padding=0)
         else:
             self.cc.setData(self.ts,self.cs)
             self.cc.setPen(pg.mkPen("#89b4fa",width=lw))
@@ -1057,8 +1070,9 @@ class Main(QMainWindow):
             if self.ts[-1]>60 and not self.user_scrolling:
                 vb=self.pc.plotItem.vb; vr=vb.viewRange()[0]
                 if self.ts[-1] >= vr[1]-5:
-                    vb.setXRange(self.ts[-1]-60,self.ts[-1],padding=0)
-                    self.pv.plotItem.vb.setXRange(self.ts[-1]-60,self.ts[-1],padding=0)
+                    x_min=max(0, self.ts[-1]-60)
+                    vb.setXRange(x_min,self.ts[-1],padding=0)
+                    self.pv.plotItem.vb.setXRange(x_min,self.ts[-1],padding=0)
             # Y range for dual (only when not auto-adapt)
             if not self.chk_auto.isChecked():
                 if self.cs:
@@ -1066,7 +1080,7 @@ class Main(QMainWindow):
                     if self.coord_mode==0: self.pc.plotItem.vb.setYRange(0,ym,padding=0)
                     elif self.coord_mode==1: self.pc.plotItem.vb.setYRange(0,200,padding=0)
                 if self.vs:
-                    ymn=min(self.vs)*0.9; ymx=max(self.vs)*1.1
+                    ymn=max(0,min(self.vs)*0.9); ymx=max(self.vs)*1.1
                     if self.coord_mode==0: self.pv.plotItem.vb.setYRange(ymn,ymx,padding=0)
                     elif self.coord_mode==1: self.pv.plotItem.vb.setYRange(0,6,padding=0)
             else:
@@ -1075,7 +1089,7 @@ class Main(QMainWindow):
                     ym=max(max(self.cs)*1.1,10)
                     self.pc.plotItem.vb.setYRange(0,ym,padding=0)
                 if self.vs:
-                    ymn=min(self.vs)*0.9; ymx=max(self.vs)*1.1
+                    ymn=max(0,min(self.vs)*0.9); ymx=max(self.vs)*1.1
                     self.pv.plotItem.vb.setYRange(ymn,ymx,padding=0)
 
         # Labels
@@ -1150,7 +1164,8 @@ class Main(QMainWindow):
 
     def _on_slider(self, val):
         if not self.ts or val>=len(self.ts): return
-        self.user_scrolling=True; self.scroll_timer.start(3000)
+        self.user_scrolling=True
+        self.btn_pause.setChecked(True)
         x=self.ts[val]; x_min=max(0,x-60)
         is_merged=self.act_mode.text()=="切换到双波形模式"
         if is_merged:
@@ -1158,6 +1173,17 @@ class Main(QMainWindow):
         else:
             self.pc.plotItem.vb.setXRange(x_min,x,padding=0)
             self.pv.plotItem.vb.setXRange(x_min,x,padding=0)
+
+    def _toggle_pause(self):
+        """Toggle auto-scroll pause/resume"""
+        if self.btn_pause.isChecked():
+            self.user_scrolling=True
+            self.btn_pause.setStyleSheet("background:#f38ba8;")
+            self.statusBar().showMessage("自动滚动已暂停")
+        else:
+            self.user_scrolling=False
+            self.btn_pause.setStyleSheet("")
+            self.statusBar().showMessage("自动滚动已恢复")
 
     def _switch_unit(self):
         self.unit=1-self.unit; self._ui()
@@ -1189,7 +1215,8 @@ class Main(QMainWindow):
         fname = os.path.join(path, f"pg_power_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
         screen = QApplication.primaryScreen()
         if screen:
-            pixmap = screen.grabWindow(self.winId())
+            # Capture entire screen (includes all windows like analysis popup)
+            pixmap = screen.grabWindow(0)
             pixmap.save(fname, "PNG")
             QMessageBox.information(self, "截图成功", f"已保存到:\n{fname}")
             logger.info(f"截图: {fname}")
