@@ -193,6 +193,7 @@ class Main(QMainWindow):
         self.time_mode=0  # 0=relative seconds, 1=system time
         self.sample_interval=50  # ms
         self.analysis_win=None
+        self.setMouseTracking(True)
 
         # Test phases
         self.phases=[{"n":"开机","d":310,"v":5.0,"c":0.300,"s":0.020},
@@ -340,6 +341,9 @@ class Main(QMainWindow):
         self.pm.plotItem.scene().addItem(self.pm_vb2)
         self.pm.plotItem.getAxis('right').linkToView(self.pm_vb2)
         self.pm_vb2.setXLink(self.pm.plotItem.vb)
+        # Set ViewBox limits to prevent negative values
+        self.pm.plotItem.vb.setLimits(xMin=0, yMin=0)
+        self.pm_vb2.setLimits(xMin=0, yMin=0)
         self.cm_v=pg.PlotDataItem(pen=pg.mkPen("#f38ba8",width=2),name="电压(V)")
         self.pm_vb2.addItem(self.cm_v)
         self.pm.addLegend(offset=(-10,10))
@@ -1279,13 +1283,22 @@ class Main(QMainWindow):
         QMessageBox.information(self,"成功","设置已生效")
 
     def _screenshot(self):
+        from PyQt5.QtCore import QRect
         path = self.le_screenshot_path.text() if hasattr(self, 'le_screenshot_path') else screenshot_dir
         os.makedirs(path, exist_ok=True)
         fname = os.path.join(path, f"pg_power_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
         screen = QApplication.primaryScreen()
         if screen:
-            # Capture entire screen (includes all windows like analysis popup)
-            pixmap = screen.grabWindow(0)
+            # Calculate bounding rect of main window + analysis window
+            main_rect = self.geometry()
+            if hasattr(self, 'analysis_win') and self.analysis_win and self.analysis_win.isVisible():
+                analysis_rect = self.analysis_win.geometry()
+                capture_rect = main_rect.united(analysis_rect)
+            else:
+                capture_rect = main_rect
+            # Capture that region from screen
+            pixmap = screen.grabWindow(0, capture_rect.x(), capture_rect.y(), 
+                                        capture_rect.width(), capture_rect.height())
             pixmap.save(fname, "PNG")
             QMessageBox.information(self, "截图成功", f"已保存到:\n{fname}")
             logger.info(f"截图: {fname}")
