@@ -32,7 +32,7 @@ if not getattr(sys, 'frozen', False):
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QGroupBox, QMessageBox, QFileDialog,
     QTabWidget, QTextEdit, QSplitter, QFrame, QToolBar, QAction, QComboBox, QGridLayout,
-    QSlider, QStatusBar, QProgressBar, QLineEdit)
+    QSlider, QStatusBar, QProgressBar, QLineEdit, QScrollArea)
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QSettings
 from PyQt5.QtGui import QIcon
 import pyqtgraph as pg
