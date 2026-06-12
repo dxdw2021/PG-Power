@@ -543,7 +543,8 @@ class Main(QMainWindow):
         self.floating_btns.setStyleSheet("""
             QWidget { background: rgba(30,30,46,220); border-radius: 8px; }
             QPushButton { background: #313244; color: #cdd6f4; border: 1px solid #45475a;
-                border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: bold; }
+                border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: bold;
+                font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
             QPushButton:hover { background: #45475a; }
         """)
         btn_layout = QHBoxLayout(self.floating_btns)
@@ -553,7 +554,7 @@ class Main(QMainWindow):
         btn_screenshot.clicked.connect(self._screenshot_region)
         btn_layout.addWidget(btn_screenshot)
         btn_report = QPushButton("生成测试报告")
-        btn_report.setStyleSheet("QPushButton { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }")
+        btn_report.setStyleSheet("QPushButton { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; }")
         btn_report.clicked.connect(self._generate_report)
         btn_layout.addWidget(btn_report)
         self.floating_btns.hide()
@@ -1124,12 +1125,13 @@ class Main(QMainWindow):
             self.btn_region.setText("关闭选区分析")
             self.act_region.setText("选区分析:开")
             self.statusBar().showMessage("选区分析已开启：左键点击第1个点设置起点，再点击第2个点设置终点")
+            # Show floating buttons
+            plot = self._get_active_plot()
+            if plot: self._position_floating_btns(plot)
             # Auto-analyze existing selection if present
             if self.sel_region_rect:
                 r = self.sel_region_rect.getRegion()
                 self._show_analysis(r[0], r[1])
-                plot = self._get_active_plot()
-                if plot: self._position_floating_btns(plot)
         else:
             self.btn_region.setText("开启选区分析")
             self.act_region.setText("选区分析:关")
@@ -1138,6 +1140,7 @@ class Main(QMainWindow):
             if hasattr(self, 'analysis_win') and self.analysis_win:
                 self.analysis_win.close()
                 self.analysis_win = None
+            # Hide floating buttons
             if hasattr(self, 'floating_btns') and self.floating_btns:
                 self.floating_btns.hide()
             self.statusBar().showMessage("选区分析已关闭")
@@ -1147,6 +1150,9 @@ class Main(QMainWindow):
             self.act_region.setText("选区分析:开")
             self.btn_region.setChecked(True)
             self.btn_region.setText("关闭选区分析")
+            # Show floating buttons
+            plot = self._get_active_plot()
+            if plot: self._position_floating_btns(plot)
             # Auto-analyze existing selection if present
             if self.sel_region_rect:
                 r = self.sel_region_rect.getRegion()
@@ -1159,6 +1165,9 @@ class Main(QMainWindow):
             if hasattr(self, 'analysis_win') and self.analysis_win:
                 self.analysis_win.close()
                 self.analysis_win = None
+            # Hide floating buttons
+            if hasattr(self, 'floating_btns') and self.floating_btns:
+                self.floating_btns.hide()
 
     def _mode(self):
         if self.act_mode.text()=="切换到合并模式":
@@ -1280,7 +1289,7 @@ class Main(QMainWindow):
         self._do_generate_report(product_name, battery_v, battery_mah)
 
     def _do_generate_report(self, product_name, battery_v, battery_mah):
-        """Generate the actual PDF report matching the reference format"""
+        """Generate PDF report with clean table layout"""
         if not self.sel_region_rect: return
         r = self.sel_region_rect.getRegion()
         t0, t1 = r[0], r[1]
@@ -1297,30 +1306,20 @@ class Main(QMainWindow):
         avg_v = sum(vr) / len(vr)
         avg_c = sum(cr) / len(cr)
         avg_p = sum(pr) / len(pr)
-        min_v = min(vr)
-        min_c = min(cr)
-        min_p = min(pr)
-        max_v = max(vr)
-        max_c = max(cr)
-        max_p = max(pr)
+        min_v = min(vr); min_c = min(cr); min_p = min(pr)
+        max_v = max(vr); max_c = max(cr); max_p = max(pr)
         
-        charge = avg_c * dt / 3600 * 1000  # μAh
-        energy = avg_p * dt / 3600  # μWh
+        charge = avg_c * dt / 3600 * 1000
+        energy = avg_p * dt / 3600
         
-        # Estimated battery life
-        avg_c_mah = avg_c / 1000  # mA
+        avg_c_mah = avg_c / 1000
         if avg_c_mah > 0:
             est_hours = battery_mah / avg_c_mah
-            est_days = est_hours / 24
-            est_int_days = int(est_days)
+            est_int_days = int(est_hours / 24)
             est_int_hours = int(est_hours - est_int_days * 24)
         else:
-            est_hours = 0
-            est_days = 0
-            est_int_days = 0
-            est_int_hours = 0
+            est_int_days = 0; est_int_hours = 0
         
-        # Create PDF
         fname, _ = QFileDialog.getSaveFileName(self, "保存报告", 
             f"{product_name}_power_report.pdf", "PDF (*.pdf)")
         if not fname: return
@@ -1334,167 +1333,120 @@ class Main(QMainWindow):
         printer.setOutputFileName(fname)
         printer.setPageSize(QPrinter.A4)
         
-        painter = QPainter()
-        if not painter.begin(printer):
-            QMessageBox.warning(self, "错误", "无法创建PDF文件")
+        p = QPainter()
+        if not p.begin(printer):
+            QMessageBox.warning(self, "错误", "无法创建PDF")
             return
         
-        # Layout constants
-        page_w = printer.pageRect().width()
-        margin = int(page_w * 0.1)
-        content_w = page_w - 2 * margin
-        y = margin
-        
-        # Colors
+        pw = printer.pageRect().width()
+        m = int(pw * 0.1)
+        cw = pw - 2 * m
+        y = m
         black = QColor(0, 0, 0)
-        gray = QColor(100, 100, 100)
-        light_gray = QColor(150, 150, 150)
+        gray = QColor(120, 120, 120)
         
-        def set_font(size, bold=False):
-            f = QFont("Microsoft YaHei", size)
+        def font(sz, bold=False):
+            f = QFont("Microsoft YaHei", sz)
             f.setBold(bold)
-            painter.setFont(f)
+            p.setFont(f)
         
-        def draw_text(x, w, text, size=10, color=black, bold=False, align='left'):
-            set_font(size, bold)
-            painter.setPen(color)
-            flags = Qt.AlignVCenter
-            if align == 'center': flags |= Qt.AlignHCenter
-            elif align == 'right': flags |= Qt.AlignRight
-            else: flags |= Qt.AlignLeft
-            painter.drawText(QRectF(x, y, w, size * 2.5), flags, text)
+        def text(x, w, txt, sz=10, c=black, b=False, a='l'):
+            font(sz, b)
+            p.setPen(c)
+            fl = Qt.AlignVCenter
+            if a == 'c': fl |= Qt.AlignHCenter
+            elif a == 'r': fl |= Qt.AlignRight
+            else: fl |= Qt.AlignLeft
+            p.drawText(QRectF(x, y, w, sz * 2.5), fl, txt)
         
-        def draw_line():
-            painter.setPen(QPen(light_gray, 1))
-            painter.drawLine(margin, y + 2, page_w - margin, y + 2)
+        def line():
+            p.setPen(QPen(QColor(200, 200, 200), 1))
+            p.drawLine(m, y + 2, pw - m, y + 2)
         
-        def advance(h=18):
-            nonlocal y
-            y += h
+        def adv(h = 20):
+            nonlocal y; y += h
         
-        # ===== Title Section =====
-        draw_text(margin, content_w, "Power", 28, black, True, 'center')
-        advance(35)
+        # Title
+        text(m, cw, "Power", 28, black, True, 'c'); adv(38)
+        text(m, cw, "设备版本：1.3.0    软件版本：3.0.0.0", 9, gray, a='c'); adv(14)
+        text(m, cw, "功耗测试报告", 20, black, True, 'c'); adv(30)
+        text(m, cw, f"被测设备：{product_name}", 12, black); adv(28)
+        line(); adv(8)
         
-        # Device version and software version
-        draw_text(margin, content_w, "设备版本：1.3.0    软件版本：3.0.0.0", 9, gray, align='center')
-        advance(15)
+        # Table
+        c0 = int(cw * 0.22)  # label
+        c1 = int(cw * 0.26)  # min
+        c2 = int(cw * 0.26)  # avg
+        c3 = cw - c0 - c1 - c2  # max
         
-        draw_text(margin, content_w, "功耗测试报告", 20, black, True, 'center')
-        advance(30)
+        text(m, c0, "", 11, black, True)
+        text(m+c0, c1, "最小值", 11, black, True, 'c')
+        text(m+c0+c1, c2, "平均值", 11, black, True, 'c')
+        text(m+c0+c1+c2, c3, "最大值", 11, black, True, 'c')
+        adv(22); line(); adv(4)
         
-        draw_text(margin, content_w, f"被测设备：{product_name}", 12, black)
-        advance(25)
+        for label, v1, v2, v3 in [
+            ("电流", f"{min_c:.3f} mA", f"{avg_c:.3f} mA", f"{max_c:.3f} mA"),
+            ("电压", f"{min_v:.3f} V", f"{avg_v:.3f} V", f"{max_v:.3f} V"),
+            ("功率", f"{min_p:.3f} mW", f"{avg_p:.3f} mW", f"{max_p:.3f} mW"),
+        ]:
+            text(m, c0, label, 10, black)
+            text(m+c0, c1, v1, 10, black, a='c')
+            text(m+c0+c1, c2, v2, 10, black, a='c')
+            text(m+c0+c1+c2, c3, v3, 10, black, a='c')
+            adv(20)
         
-        # ===== Main Data Table =====
-        col1_w = int(content_w * 0.2)  # Label column
-        col_w = int(content_w * 0.26)  # Value columns
+        adv(4); line(); adv(8)
         
-        # Header row
-        draw_text(margin, col1_w, "", 11, black, True)
-        draw_text(margin + col1_w, col_w, "最小值", 11, black, True, 'center')
-        draw_text(margin + col1_w + col_w, col_w, "平均值", 11, black, True, 'center')
-        draw_text(margin + col1_w + col_w * 2, col_w, "最大值", 11, black, True, 'center')
-        advance(25)
-        draw_line()
-        advance(5)
+        # Estimated
+        text(m, cw, "预估结果", 14, black, True); adv(24)
+        text(m, cw, "能量累计", 12, black, True); adv(20)
+        text(m, cw, f"{battery_v}V电池", 11, black); adv(20)
         
-        # Current row
-        draw_text(margin, col1_w, "电流", 11, black)
-        draw_text(margin + col1_w, col_w, f"{min_c:.3f} mA", 11, black, align='center')
-        draw_text(margin + col1_w + col_w, col_w, f"{avg_c:.3f} mA", 11, black, align='center')
-        draw_text(margin + col1_w + col_w * 2, col_w, f"{max_c:.3f} mA", 11, black, align='center')
-        advance(22)
+        # Values
+        c_left = int(cw * 0.35)
+        c_right = cw - c_left
+        text(m, c_left, f"{charge:.3f} μAh", 11, black)
+        text(m + c_left, c_right, f"{energy:.3f} μWh", 11, black)
+        adv(24)
         
-        # Voltage row
-        draw_text(margin, col1_w, "电压", 11, black)
-        draw_text(margin + col1_w, col_w, f"{min_v:.3f} V", 11, black, align='center')
-        draw_text(margin + col1_w + col_w, col_w, f"{avg_v:.3f} V", 11, black, align='center')
-        draw_text(margin + col1_w + col_w * 2, col_w, f"{max_v:.3f} V", 11, black, align='center')
-        advance(22)
+        # Time columns
+        tc = [int(cw * 0.35), int(cw * 0.35), cw - int(cw * 0.35) * 2]
+        text(m, tc[0], "本次测试", 10, gray)
+        text(m + tc[0], tc[1], "1天", 10, gray, a='c')
+        text(m + tc[0] + tc[1], tc[2], "30天", 10, gray, a='c')
+        adv(18)
         
-        # Power row
-        draw_text(margin, col1_w, "功率", 11, black)
-        draw_text(margin + col1_w, col_w, f"{min_p:.3f} mW", 11, black, align='center')
-        draw_text(margin + col1_w + col_w, col_w, f"{avg_p:.3f} mW", 11, black, align='center')
-        draw_text(margin + col1_w + col_w * 2, col_w, f"{max_p:.3f} mW", 11, black, align='center')
-        advance(25)
-        draw_line()
-        advance(10)
-        
-        # ===== Estimated Results Section =====
-        draw_text(margin, content_w, "预估结果", 14, black, True)
-        advance(28)
-        
-        draw_text(margin, content_w, "能量累计", 12, black, True)
-        advance(22)
-        
-        # Battery row header
-        draw_text(margin, col1_w + col_w, f"{battery_v}V电池", 11, black)
-        advance(22)
-        
-        # Values row
-        draw_text(margin, content_w, f"{charge:.3f} μAh", 11, black, align='left')
-        draw_text(margin + content_w * 0.35, content_w, f"{energy:.3f} μWh", 11, black, align='left')
-        advance(25)
-        
-        # Time projection header
-        draw_text(margin, content_w, "本次测试", 10, gray, align='left')
-        draw_text(margin + content_w * 0.25, content_w * 0.15, "1小时", 10, gray, align='center')
-        draw_text(margin + content_w * 0.40, content_w * 0.15, "1天", 10, gray, align='center')
-        draw_text(margin + content_w * 0.55, content_w * 0.15, "30天", 10, gray, align='center')
-        advance(20)
-        
-        # Time values
-        e_1h = energy * 3600 / dt if dt > 0 else 0
         e_1d = energy * 86400 / dt if dt > 0 else 0
         e_30d = e_1d * 30
+        text(m, tc[0], f"{charge:.3f} μAh", 10, black)
+        text(m + tc[0], tc[1], f"{e_1d/1000:.3f} mWh", 10, black, a='c')
+        text(m + tc[0] + tc[1], tc[2], f"{e_30d/1000:.3f} mWh", 10, black, a='c')
+        adv(18)
         
-        draw_text(margin, content_w, f"{charge:.3f} μAh", 10, black, align='left')
-        draw_text(margin + content_w * 0.35, content_w, f"{energy:.3f} μWh", 10, black, align='left')
-        advance(18)
-        
-        draw_text(margin + content_w * 0.25, content_w * 0.15, f"{e_1h/1000:.3f} mWh", 10, black, align='center')
-        draw_text(margin + content_w * 0.40, content_w * 0.15, f"{e_1d/1000:.3f} mWh", 10, black, align='center')
-        draw_text(margin + content_w * 0.55, content_w * 0.15, f"{e_30d/1000:.3f} mWh", 10, black, align='center')
-        advance(18)
-        
-        # Capacity in mAh
         charge_mah = charge / 1000
-        draw_text(margin, content_w, f"{charge_mah:.3f} mAh", 10, black, align='left')
-        advance(18)
+        text(m, tc[0], f"{charge_mah:.3f} mAh", 10, black)
+        adv(22)
         
-        # Battery life estimate
-        draw_text(margin, content_w, f"预计{battery_mah}mAh电量，可用{est_int_days}天{est_int_hours}小时", 12, black, True)
-        advance(30)
+        text(m, cw, f"预计{battery_mah}mAh电量，可用{est_int_days}天{est_int_hours}小时", 12, black, True)
+        adv(28)
         
-        # ===== Report Footer =====
-        draw_line()
-        advance(10)
+        # Footer
+        line(); adv(8)
+        h = int(dt // 3600); mi = int((dt % 3600) // 60); s = dt % 60
+        dur = f"{h:02d}:{mi:02d}:{s:06.3f}"
+        text(m, cw // 2, "报告测试时长", 10, gray)
+        text(m + cw // 2, cw // 2, dur, 10, black)
+        adv(18)
+        text(m, cw // 2, "报告生成时间", 10, gray)
+        text(m + cw // 2, cw // 2, datetime.now().strftime('%Y/%m/%d %H:%M:%S'), 10, black)
+        adv(18)
+        text(m, cw // 2, "", 10, gray)
+        text(m + cw // 2, cw // 2, f"{charge_mah/1000:.3f} Ah", 10, black)
         
-        # Test duration
-        h = int(dt // 3600)
-        m = int((dt % 3600) // 60)
-        s = dt % 60
-        duration_str = f"{h:02d}:{m:02d}:{s:06.3f}"
-        
-        draw_text(margin, content_w * 0.5, "报告测试时长", 10, gray, align='left')
-        draw_text(margin + content_w * 0.5, content_w * 0.5, duration_str, 10, black, align='left')
-        advance(20)
-        
-        # Report generation time
-        draw_text(margin, content_w * 0.5, "报告生成时间", 10, gray, align='left')
-        draw_text(margin + content_w * 0.5, content_w * 0.5, datetime.now().strftime('%Y/%m/%d %H:%M:%S'), 10, black, align='left')
-        advance(20)
-        
-        # Total capacity
-        draw_text(margin, content_w * 0.5, "", 10, gray, align='left')
-        draw_text(margin + content_w * 0.5, content_w * 0.5, f"{charge_mah/1000:.3f} Ah", 10, black, align='left')
-        
-        painter.end()
-        
-        QMessageBox.information(self, "生成成功", f"测试报告已保存到:\n{fname}")
-        logger.info(f"测试报告: {fname}")
+        p.end()
+        QMessageBox.information(self, "生成成功", f"报告已保存:\n{fname}")
+        logger.info(f"报告: {fname}")
         os.startfile(fname)
         if self.act_mode.text()=="切换到合并模式":
             self.act_mode.setText("切换到双波形模式")
