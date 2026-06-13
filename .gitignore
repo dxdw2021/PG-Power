@@ -20,6 +20,15 @@ venv/
 # 临时测试文件
 test_qt.py
 
+# 运行时输出
+logs/
+data/
+screenshots/
+load_profile.json
+
+# 测试脚本
+test_v_filter.py
+
 # 系统文件
 Thumbs.db
 .DS_Store

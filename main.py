@@ -273,10 +273,26 @@ def s_readline():
     if _sample_cnt > 0 and _sample_cnt % 200 == 0:
         if len(_v_raw_history) >= 5:
             hv = sorted(_v_raw_history)
+            rate = _v_filtered / _sample_cnt * 100
             logger.debug(
                 f"[V-FILTER-STAT] sample_cnt={_sample_cnt} 累计过滤={_v_filtered} "
-                f"v_min={hv[0]} v_mid={hv[len(hv)//2]} v_max={hv[-1]}"
+                f"过滤率={rate:.1f}% v_min={hv[0]} v_mid={hv[len(hv)//2]} v_max={hv[-1]}"
             )
+            # 过滤率 > 20% 时自动告警，输出诊断信息
+            if rate > 20:
+                logger.warning(
+                    f"[V-FILTER-ALARM] ⚠️ 电压过滤率异常高 {rate:.1f}%！"
+                    f" 近200次采样中 {_v_filtered}/{_sample_cnt} 被过滤"
+                )
+                logger.warning(
+                    f"[V-FILTER-ALARM] 当前基线范围: v_min={hv[0]} v_mid={hv[len(hv)//2]} v_max={hv[-1]}"
+                )
+                logger.warning(
+                    f"[V-FILTER-ALARM] 排查建议:"
+                    f" 1)若v_baseline(~{hv[len(hv)//2]})正常但频繁过滤 → USB数据异常"
+                    f" 2)若v_baseline已偏大(>30000) → 历史缓冲区被污染，需重启采集"
+                    f" 3)若v_min/v_max跨度大 → 设备电压剧烈波动，检查供电"
+                )
 
     _c_raw_history.append(c_med)
     if len(_c_raw_history) > 50:
