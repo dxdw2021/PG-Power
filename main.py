@@ -1,6 +1,20 @@
 import sys, os, ctypes, threading, platform, time, csv, logging, json, random
-from datetime import datetime
-from ctypes import c_int, c_char_p, create_string_buffer
+from datetime import datetime, timedelta
+from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
+
+APP_VERSION = "2.0.1"
+REPORT_VERSION = "2.0.1"
+
+def set_dark_titlebar(window, enable=True):
+    """Windows 10/11 深色标题栏"""
+    if sys.platform != "win32": return
+    try:
+        hwnd = int(window.winId())
+        value = c_int(1 if enable else 0)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 20, byref(value), sizeof(value))
+    except Exception:
+        pass
 
 # ===== Log =====
 # Use EXE directory for logs in frozen mode, script directory otherwise
@@ -32,9 +46,9 @@ if not getattr(sys, 'frozen', False):
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QGroupBox, QMessageBox, QFileDialog,
     QTabWidget, QTextEdit, QSplitter, QFrame, QToolBar, QAction, QComboBox, QGridLayout,
-    QSlider, QStatusBar, QProgressBar, QLineEdit, QScrollArea)
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QSettings
-from PyQt5.QtGui import QIcon
+    QSlider, QStatusBar, QProgressBar, QLineEdit, QScrollArea, QCheckBox, QRadioButton)
+from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QSettings, pyqtSignal, QPropertyAnimation, QEasingCurve, pyqtProperty
+from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QRadialGradient
 import pyqtgraph as pg
 
 # ===== GPIB =====
@@ -72,6 +86,173 @@ def g_qry(c):
     buf = create_string_buffer(256); ni4882.ibwrt(gpib_ud, (c+"\r\n").encode(), len(c)+2)
     ni4882.ibrd(gpib_ud, buf, 256); return buf.value.decode().strip()
 
+# ===== IotPower-cc USB (pyusb + libusb, WinUSB) =====
+LUATOS_VID = 0x1209
+LUATOS_PID = 0x7301
+
+_libusb_dev = None
+_libusb_be = None
+_libusb_ep_out = None
+_libusb_ep_in = None
+_serial_lock = threading.Lock()
+
+_libusb_dll = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libusb-1.0.dll")
+USB_OK = os.path.exists(_libusb_dll)
+
+if USB_OK:
+    try:
+        import usb.core
+        import usb.backend.libusb1
+        _libusb_be = usb.backend.libusb1.get_backend(
+            find_library=lambda x: _libusb_dll)
+        if not _libusb_be:
+            USB_OK = False
+    except Exception as e:
+        logger.warning(f"USB库加载失败: {e}")
+        USB_OK = False
+
+def s_scan():
+    """Scan for IotPower-cc WinUSB device"""
+    if not USB_OK:
+        return []
+    try:
+        dev = usb.core.find(backend=_libusb_be, find_all=True,
+                            idVendor=LUATOS_VID, idProduct=LUATOS_PID)
+        if dev:
+            return [f"IotPower-cc (VID_{LUATOS_VID:04X}/PID_{LUATOS_PID:04X})"]
+        return []
+    except Exception:
+        return []
+
+def s_open(dev_id=None, baud=None):
+    """Open IotPower-cc WinUSB device"""
+    global _libusb_dev, _libusb_ep_out, _libusb_ep_in
+    if not USB_OK:
+        logger.warning("libusb-1.0.dll未找到"); return False
+    try:
+        dev = usb.core.find(backend=_libusb_be,
+                            idVendor=LUATOS_VID, idProduct=LUATOS_PID)
+        if dev is None:
+            logger.warning(f"未找到设备 VID_{LUATOS_VID:04X}/PID_{LUATOS_PID:04X}")
+            return False
+        try:
+            dev.set_configuration()
+        except Exception as e:
+            logger.debug(f"设置配置(可忽略): {e}")
+        cfg = dev.get_active_configuration()
+        _libusb_ep_out = None
+        _libusb_ep_in = None
+        for intf in cfg:
+            for ep in intf:
+                if ep.bEndpointAddress & 0x80:
+                    if _libusb_ep_in is None:
+                        _libusb_ep_in = ep.bEndpointAddress
+                else:
+                    if _libusb_ep_out is None:
+                        _libusb_ep_out = ep.bEndpointAddress
+        if _libusb_ep_out is None or _libusb_ep_in is None:
+            logger.warning("未找到USB端点")
+            return False
+        _libusb_dev = dev
+        logger.info(f"USB设备已连接: VID={LUATOS_VID:04X} PID={LUATOS_PID:04X} EP_IN=0x{_libusb_ep_in:02X} EP_OUT=0x{_libusb_ep_out:02X}")
+        return True
+    except Exception as e:
+        logger.warning(f"USB打开失败: {e}")
+        return False
+
+def s_close():
+    """Close USB device"""
+    global _libusb_dev, _libusb_ep_out, _libusb_ep_in
+    try:
+        if _libusb_dev:
+            try: _libusb_dev.reset()
+            except: pass
+    except Exception:
+        pass
+    _libusb_dev = None
+    _libusb_ep_out = None
+    _libusb_ep_in = None
+    logger.info("USB设备已断开")
+
+def s_send(c):
+    """Send command to IotPower-cc"""
+    if not _libusb_dev or _libusb_ep_out is None: return
+    try:
+        data = (c + "\r\n").encode()
+        _libusb_dev.write(_libusb_ep_out, data, timeout=1000)
+    except Exception as e:
+        logger.warning(f"USB发送失败: {e}")
+
+def s_qry(c):
+    """Send query and read response"""
+    if not _libusb_dev or _libusb_ep_in is None: return None
+    try:
+        s_send(c)
+        time.sleep(0.05)
+        raw = _libusb_dev.read(_libusb_ep_in, 256, timeout=1000)
+        if raw and len(raw) > 0:
+            return bytes(raw)
+        return None
+    except Exception as e:
+        logger.warning(f"USB查询失败: {e}")
+        return None
+
+_debug_cnt = 0
+_c_raw_history = []
+
+def s_readline():
+    """Read one 64-byte USB packet, return filtered (v_raw, c_raw)"""
+    global _debug_cnt, _c_raw_history
+    if not _libusb_dev or _libusb_ep_in is None:
+        return None
+    try:
+        raw = _libusb_dev.read(_libusb_ep_in, 64, timeout=50)
+        if not raw or len(raw) < 4:
+            return None
+        raw = bytes(raw)
+    except usb.core.USBTimeoutError:
+        return None
+    except Exception:
+        return None
+
+    # Skip control/sync packet (starts with 0xAA 0x55)
+    if len(raw) >= 2 and raw[0] == 0xAA and raw[1] == 0x55:
+        return None
+
+    # Parse all 4-byte LE samples: [v_lo, v_hi, c_lo, c_hi]
+    vs, cs = [], []
+    i = 0
+    while i + 3 < len(raw):
+        v = raw[i] | (raw[i + 1] << 8)
+        c = raw[i + 2] | (raw[i + 3] << 8)
+        if v > 1000 and c > 0:
+            vs.append(v)
+            cs.append(c)
+        i += 4
+
+    if not vs:
+        return None
+
+    vs.sort(); cs.sort()
+    mid = len(vs) // 2
+    v_med = vs[mid]
+    c_med = cs[mid]
+
+    # Filter sync packet outliers (c_raw jumps to 7000+ while normal is ~688)
+    if len(_c_raw_history) >= 5:
+        hist_mid = sorted(_c_raw_history)[len(_c_raw_history)//2]
+        if hist_mid > 100 and abs(c_med - hist_mid) > hist_mid * 5:
+            if _debug_cnt < 10:
+                logger.debug(f"OUTLIER: c={c_med} hist_mid={hist_mid:.0f}")
+                _debug_cnt += 1
+            return None
+
+    _c_raw_history.append(c_med)
+    if len(_c_raw_history) > 50:
+        _c_raw_history.pop(0)
+
+    return (v_med, c_med)
+
 # ===== Theme =====
 def get_themes(is_low_res):
     fs = "11px" if is_low_res else "13px"
@@ -96,9 +277,11 @@ def get_themes(is_low_res):
     QPushButton#save{{background:#89b4fa;border-color:#89b4fa}}QPushButton#load{{background:#cba6f7;border-color:#cba6f7}}
     QPushButton#clear{{background:#6c7086;border-color:#6c7086}}
     QPushButton#on{{background:#a6e3a1;border-color:#a6e3a1}}QPushButton#off{{background:#f38ba8;border-color:#f38ba8}}
-    QMessageBox{{background:#1e1e2e}}
-    QMessageBox QLabel{{color:#cdd6f4}}
-    QMessageBox QPushButton{{min-width:80px;padding:8px 16px}}
+    QMessageBox{{background:#1e1e2e;color:#cdd6f4}}
+    QMessageBox QLabel{{color:#cdd6f4;background:transparent}}
+    QMessageBox QPushButton{{background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:6px;padding:8px 16px;min-width:80px;font-weight:bold}}
+    QMessageBox QPushButton:hover{{background:#45475a}}
+    QMessageBox QPushButton:pressed{{background:#585b70}}
     QTabWidget::pane{{border:1px solid #313244;border-radius:4px;background:#1e1e2e}}
     QTabBar::tab{{background:#181825;color:#6c7086;padding:{tab_pad};border:1px solid #313244;border-bottom:none;border-radius:4px 4px 0 0;margin-right:2px;font-size:{fs_btn}}}
     QTabBar::tab:selected{{color:#cdd6f4;background:#1e1e2e;border-color:#89b4fa;border-bottom:2px solid #89b4fa}}
@@ -128,6 +311,11 @@ def get_themes(is_low_res):
     QPushButton#test{{background:#ccd0da;color:#5c5f77}}QPushButton#test:checked{{background:#fe640b}}
     QPushButton#save{{background:#1e66f5}}QPushButton#load{{background:#8839ef}}QPushButton#clear{{background:#7c7f93}}
     QPushButton#on{{background:#40a02b}}QPushButton#off{{background:#d20f39}}
+    QMessageBox{{background:#eff1f5;color:#4c4f69}}
+    QMessageBox QLabel{{color:#4c4f69;background:transparent}}
+    QMessageBox QPushButton{{background:#1e66f5;color:#ffffff;border:none;border-radius:6px;padding:8px 16px;min-width:80px;font-weight:bold}}
+    QMessageBox QPushButton:hover{{background:#1557d0}}
+    QMessageBox QPushButton:pressed{{background:#1248b0}}
     QTabWidget::pane{{border:1px solid #ccd0da}}
     QTabBar::tab{{background:#e6e9ef;color:#7c7f93;padding:{tab_pad};border:none;border-bottom:2px solid transparent;font-size:{fs_btn}}}
     QTabBar::tab:selected{{color:#4c4f69;border-bottom:2px solid #1e66f5}}
@@ -145,15 +333,129 @@ def get_themes(is_low_res):
     """
     return DARK, LIGHT
 
-class RegionAnalysisPanel(QWidget):
-    """选区分析面板"""
+class RoundSwitch(QCheckBox):
+    _off_bg = "#585b70"
+    _on_bg = "#a6e3a1"
+    _handle = "#cdd6f4"
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(280)
-        self.setStyleSheet("background-color: #121212;")
+        self.setFixedSize(52, 26)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setText("")
+        self._handle_pos = 3.0
+        self._setup_animation()
+
+    def _setup_animation(self):
+        self._anim = QPropertyAnimation(self, b"handle_pos")
+        self._anim.setDuration(150)
+        self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+
+    def get_handle_pos(self):
+        return self._handle_pos
+
+    def set_handle_pos(self, val):
+        self._handle_pos = val
+        self.update()
+
+    handle_pos = pyqtProperty(float, get_handle_pos, set_handle_pos)
+
+    def set_dark(self, is_dark):
+        if is_dark:
+            RoundSwitch._off_bg = "#585b70"
+            RoundSwitch._on_bg = "#a6e3a1"
+            RoundSwitch._handle = "#cdd6f4"
+        else:
+            RoundSwitch._off_bg = "#bcc0cc"
+            RoundSwitch._on_bg = "#40a02b"
+            RoundSwitch._handle = "#ffffff"
+        self.update()
+
+    def nextCheckState(self):
+        super().nextCheckState()
+        target = 27.0 if self.isChecked() else 3.0
+        self._anim.stop()
+        self._anim.setStartValue(self._handle_pos)
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.setChecked(not self.isChecked())
+            target = 27.0 if self.isChecked() else 3.0
+            self._anim.stop()
+            self._anim.setStartValue(self._handle_pos)
+            self._anim.setEndValue(target)
+            self._anim.start()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        r = h / 2.0
+
+        if self.isChecked():
+            bg = QColor(RoundSwitch._on_bg)
+        else:
+            bg = QColor(RoundSwitch._off_bg)
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(0, 0, w, h, r, r)
+
+        hx = self._handle_pos
+        hr = (h - 6) / 2.0
+        hy = (h - hr * 2) / 2.0
+        grad = QRadialGradient(hx + hr, hy + hr, hr)
+        grad.setColorAt(0, QColor(RoundSwitch._handle))
+        grad.setColorAt(1, QColor(RoundSwitch._handle).darker(110))
+        p.setBrush(QBrush(grad))
+        p.setPen(QPen(QColor(0, 0, 0, 20), 0.5))
+        p.drawEllipse(int(hx), int(hy), int(hr * 2), int(hr * 2))
+        p.end()
+
+class RegionAnalysisPanel(QWidget):
+    """选区分析面板（含截图/报告/关闭按钮）"""
+    screenshot_requested = pyqtSignal()
+    report_requested = pyqtSignal()
+    close_requested = pyqtSignal()
+    minimize_requested = pyqtSignal()
+
+    def __init__(self, is_dark=True, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(320)
+        self.is_dark = is_dark
+        self._apply_theme()
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setContentsMargins(16, 16, 16, 8)
         main_layout.setSpacing(14)
+
+        # Top bar: minimize + close
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        self.btn_mini = QPushButton("─")
+        self.btn_mini.setFixedSize(28, 28)
+        self.btn_mini.setStyleSheet("""
+            QPushButton { background: transparent; color: #6c7086; border: none;
+                border-radius: 4px; font-size: 14px; font-weight: bold; }
+            QPushButton:hover { background: #313244; color: #cdd6f4; }
+        """)
+        self.btn_mini.clicked.connect(self.minimize_requested.emit)
+        top.addWidget(self.btn_mini)
+        top.addStretch()
+        self.btn_close = QPushButton("✕")
+        self.btn_close.setFixedSize(28, 28)
+        self.btn_close.setStyleSheet("""
+            QPushButton { background: transparent; color: #6c7086; border: none;
+                border-radius: 4px; font-size: 14px; font-weight: bold; }
+            QPushButton:hover { background: #e81123; color: white; }
+        """)
+        self.btn_close.clicked.connect(self.close_requested.emit)
+        top.addWidget(self.btn_close)
+        main_layout.addLayout(top)
 
         self.avg_block = self._create_block("∿", "平均", "#77ff77", ["-- V", "-- mA", "-- mW"])
         main_layout.addWidget(self.avg_block)
@@ -165,7 +467,38 @@ class RegionAnalysisPanel(QWidget):
         main_layout.addWidget(self.energy_block)
         self.time_block = self._create_block("⟳", "时间", "#aaaaaa", ["-- 秒", "-- Hz"])
         main_layout.addWidget(self.time_block)
+
+        # Action buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self.btn_screenshot = QPushButton("截图区域")
+        self.btn_screenshot.setStyleSheet("""
+            QPushButton { background: #313244; color: #cdd6f4; border: 1px solid #45475a;
+                border-radius: 6px; padding: 8px 12px; font-weight: bold; font-size: 12px; }
+            QPushButton:hover { background: #45475a; }
+        """)
+        self.btn_screenshot.clicked.connect(self.screenshot_requested.emit)
+        btn_row.addWidget(self.btn_screenshot)
+
+        self.btn_report = QPushButton("生成报告")
+        self.btn_report.setStyleSheet("""
+            QPushButton { background: #89b4fa; color: #1e1e2e; border: none;
+                border-radius: 6px; padding: 8px 12px; font-weight: bold; font-size: 12px; }
+            QPushButton:hover { background: #74a8fa; }
+        """)
+        self.btn_report.clicked.connect(self.report_requested.emit)
+        btn_row.addWidget(self.btn_report)
+        main_layout.addLayout(btn_row)
+
         main_layout.addStretch()
+
+    def set_dark(self, is_dark):
+        self.is_dark = is_dark
+        self._apply_theme()
+
+    def _apply_theme(self):
+        bg = "#121212" if self.is_dark else "#eff1f5"
+        self.setStyleSheet(f"background-color: {bg};")
 
     def _create_block(self, icon_text, title, color, value_texts):
         block = QWidget()
@@ -174,7 +507,8 @@ class RegionAnalysisPanel(QWidget):
         layout.setContentsMargins(8, 4, 8, 8)
         layout.setSpacing(6)
         
-        # Header: icon + title + "选中区域"
+        sub_color = "#888888" if self.is_dark else "#7c7f93"
+        
         top_row = QHBoxLayout()
         top_row.setSpacing(6)
         icon_label = QLabel(icon_text)
@@ -183,21 +517,19 @@ class RegionAnalysisPanel(QWidget):
         title_label = QLabel(title)
         title_label.setStyleSheet(f"color: {color}; font-size: 20px; font-weight: bold; background: transparent;")
         sub_label = QLabel("选中区域")
-        sub_label.setStyleSheet("color: #888888; font-size: 12px; background: transparent;")
+        sub_label.setStyleSheet(f"color: {sub_color}; font-size: 12px; background: transparent;")
         top_row.addWidget(icon_label)
         top_row.addWidget(title_label)
         top_row.addStretch()
         top_row.addWidget(sub_label)
         layout.addLayout(top_row)
         
-        # Colored separator line
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         line.setFixedHeight(1)
         line.setStyleSheet(f"background-color: {color};")
         layout.addWidget(line)
         
-        # Values - right aligned with consistent padding
         value_layout = QVBoxLayout()
         value_layout.setSpacing(4)
         value_layout.setContentsMargins(4, 4, 4, 0)
@@ -239,23 +571,29 @@ class TimeAxisItem(pg.AxisItem):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.t0_abs = None
-    
+
     def setStartTime(self, t0):
         self.t0_abs = t0
-    
+
+    def _format_system_time(self, dt):
+        total_sec = (dt.hour * 3600 + dt.minute * 60 + dt.second)
+        if total_sec < 3600:
+            return dt.strftime("%H:%M:%S")
+        return dt.strftime("%H:%M:%S")
+
     def tickStrings(self, values, scale, spacing):
         if self.t0_abs is None:
             return [f"{v:.1f}" for v in values]
         strings = []
         for v in values:
             dt = self.t0_abs + timedelta(seconds=v)
-            strings.append(dt.strftime("%Y%m%d %Hh%Mm%Ss"))
+            strings.append(dt.strftime("%H:%M:%S"))
         return strings
 
 class Main(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PG-Power | GPIB电源测试工具 v2.0.1")
+        self.setWindowTitle(f"PG-Power | GPIB电源测试工具 v{APP_VERSION}")
         # Adaptive window size based on screen resolution
         screen = QApplication.primaryScreen()
         if screen:
@@ -281,8 +619,13 @@ class Main(QMainWindow):
         self.scroll_pos=0
         self.time_mode=0  # 0=relative seconds, 1=system time
         self.sample_interval=50  # ms
-        self.data_font_size=12  # px for average/cumulative labels
+        self.data_font_size=18  # px for average/cumulative labels
+        self.data_font_bold=True
+        self.device_mode="gpib"  # "gpib" or "luatos"
+        self.serial_port_name=""
         self.analysis_win=None
+        self.region_panel=None
+        self.t0_abs=None
         self.setMouseTracking(True)
 
         # Test phases
@@ -298,6 +641,7 @@ class Main(QMainWindow):
 
         self._init_ui()
         self._load_settings()
+        set_dark_titlebar(self, self.theme_idx != 1)
 
         self.timer=QTimer(); self.timer.setInterval(50); self.timer.timeout.connect(self._ui); self.timer.start()
         self.statusBar().showMessage("就绪 | GPIB: " + ("可用" if GPIB_OK else "不可用"))
@@ -307,7 +651,7 @@ class Main(QMainWindow):
 
     def _init_ui(self):
         m=QVBoxLayout(self); m.setContentsMargins(0,0,0,0); m.setSpacing(0)
-        tb=QToolBar(); self.addToolBar(tb)
+        tb=QToolBar(); tb.setMovable(False); self.addToolBar(tb)
         self.act_float=QAction("悬浮窗",self); self.act_float.triggered.connect(self._float); tb.addAction(self.act_float)
         self.act_save_auto=QAction("自动保存:开",self); self.act_save_auto.setCheckable(True)
         self.act_save_auto.setChecked(True); self.act_save_auto.triggered.connect(self._toggle_auto_save)
@@ -335,7 +679,51 @@ class Main(QMainWindow):
 
         self._init_wave(w1); self._init_settings(w2); self._init_analysis(w3)
         self._init_script(w4)
-        QVBoxLayout(w5).addWidget(QLabel("<h2>PG-Power v2.0</h2><p>基于LuatOS PC客户端功能规范</p><p>Python + PyQt5 + PyQtGraph</p>"))
+        scroll_a = QScrollArea()
+        scroll_a.setWidgetResizable(True)
+        scroll_a.setFrameShape(QFrame.NoFrame)
+        about_w = QWidget()
+        lo = QVBoxLayout(about_w)
+        lo.setAlignment(Qt.AlignCenter)
+        lo.setSpacing(6)
+        ico_paths = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "Icons", "ios_ios-1024.png"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "Icons", "web_web-256.png"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "Icons", "windows_windows-256.png"),
+        ]
+        for p in ico_paths:
+            if os.path.exists(p):
+                ico_path = p
+                break
+        else:
+            ico_path = None
+        if ico_path:
+            icon = QLabel()
+            pix = QPixmap(ico_path)
+            if not pix.isNull():
+                icon.setPixmap(pix.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                icon.setAlignment(Qt.AlignCenter)
+                lo.addWidget(icon)
+        lo.addSpacing(8)
+        ver = QLabel(f"<h1 style='margin:0;font-size:22pt;'>PG-Power v{APP_VERSION}</h1>")
+        ver.setAlignment(Qt.AlignCenter)
+        lo.addWidget(ver)
+        for txt in [
+            "<span style='font-size:14pt;'><b>基于LuatOS PC客户端功能规范</b></span>",
+            "<span style='font-size:14pt;'>Python + PyQt5 + PyQtGraph</span>",
+            "<hr width='60%'>",
+            "<span style='font-size:14pt;'><b>开发者：</b>zhaohuwei</span>",
+            "<span style='font-size:14pt;'><b>项目地址：</b><a href='https://gitcode.com/dxdw2021/PG-Power' style='color:#89b4fa;'>gitcode.com/dxdw2021/PG-Power</a></span>",
+            "<hr width='60%'>",
+            "<span style='color:#6c7086;font-size:11pt;'>GPIB电源测试工具 &copy; 2026</span>"
+        ]:
+            lb = QLabel(txt)
+            lb.setAlignment(Qt.AlignCenter)
+            lb.setOpenExternalLinks(True)
+            lo.addWidget(lb)
+        lo.addStretch()
+        scroll_a.setWidget(about_w)
+        QVBoxLayout(w5).addWidget(scroll_a)
 
     # ===== Tab1: Wave =====
     def _init_wave(self, parent):
@@ -346,7 +734,7 @@ class Main(QMainWindow):
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         left_scroll.setFrameShape(QFrame.NoFrame)
         left=QWidget()
-        left_width = 180 if self.is_low_res else 220
+        left_width = 200 if self.is_low_res else 260
         left_scroll.setFixedWidth(left_width + 20)
         ll=QVBoxLayout(left); ll.setSpacing(2 if self.is_low_res else 4)
         
@@ -449,6 +837,9 @@ class Main(QMainWindow):
         # Current indicator line (horizontal, movable, will be repositioned)
         self.tc_m=pg.InfiniteLine(angle=0,movable=False,pen=pg.mkPen("#89b4fa",width=1,style=Qt.DotLine))
         self.pm.addItem(self.tc_m, ignoreBounds=True)
+        # Vertical time indicator line (merged)
+        self.tm_m=pg.InfiniteLine(angle=90,movable=False,pen=pg.mkPen("#89b4fa",width=1,style=Qt.DotLine))
+        self.pm.addItem(self.tm_m, ignoreBounds=True)
         # Voltage indicator line (horizontal, mapped Y)
         self.tvl_m=pg.InfiniteLine(angle=0,movable=False,pen=pg.mkPen("#f38ba8",width=1,style=Qt.DotLine))
         self.pm.addItem(self.tvl_m, ignoreBounds=True)
@@ -489,6 +880,9 @@ class Main(QMainWindow):
         self.pc.scene().addItem(self.lc)
         self.tc=pg.InfiniteLine(angle=0,movable=False,pen=pg.mkPen("#89b4fa",width=1,style=Qt.DotLine))
         self.pc.addItem(self.tc, ignoreBounds=True)
+        # Vertical time indicator line (current)
+        self.tm_c=pg.InfiniteLine(angle=90,movable=False,pen=pg.mkPen("#89b4fa",width=1,style=Qt.DotLine))
+        self.pc.addItem(self.tm_c, ignoreBounds=True)
         self.pc.scene().sigMouseMoved.connect(self._mc)
         ml.addWidget(self.pc)
 
@@ -515,6 +909,9 @@ class Main(QMainWindow):
         self.pv.scene().addItem(self.lvl)
         self.tvl=pg.InfiniteLine(angle=0,movable=False,pen=pg.mkPen("#f38ba8",width=1,style=Qt.DotLine))
         self.pv.addItem(self.tvl, ignoreBounds=True)
+        # Vertical time indicator line (voltage)
+        self.tm_v=pg.InfiniteLine(angle=90,movable=False,pen=pg.mkPen("#f38ba8",width=1,style=Qt.DotLine))
+        self.pv.addItem(self.tm_v, ignoreBounds=True)
         self.pv.scene().sigMouseMoved.connect(self._mv)
         ml.addWidget(self.pv)
 
@@ -538,29 +935,6 @@ class Main(QMainWindow):
         self.analysis_win=None
         self._resizing=None; self._resize_start_x=None; self._resize_orig=None
         
-        # Floating action buttons (shown when selection exists)
-        self.floating_btns = QWidget(self)
-        self.floating_btns.setFixedWidth(220)
-        self.floating_btns.setStyleSheet("""
-            QWidget { background: rgba(30,30,46,220); border-radius: 8px; }
-            QPushButton { background: #313244; color: #cdd6f4; border: 1px solid #45475a;
-                border-radius: 6px; padding: 6px 10px; font-size: 11px; font-weight: bold; }
-            QPushButton:hover { background: #45475a; }
-        """)
-        btn_layout = QHBoxLayout(self.floating_btns)
-        btn_layout.setContentsMargins(6, 4, 6, 4)
-        btn_layout.setSpacing(6)
-        btn_screenshot = QPushButton("截图区域")
-        btn_screenshot.setFixedWidth(90)
-        btn_screenshot.clicked.connect(self._screenshot_region)
-        btn_layout.addWidget(btn_screenshot)
-        btn_report = QPushButton("生成报告")
-        btn_report.setFixedWidth(90)
-        btn_report.setStyleSheet("QPushButton { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }")
-        btn_report.clicked.connect(self._generate_report)
-        btn_layout.addWidget(btn_report)
-        self.floating_btns.hide()
-        
         self.user_scrolling=False; self.scroll_timer=QTimer(); self.scroll_timer.setSingleShot(True)
         self.scroll_timer.timeout.connect(lambda: setattr(self,'user_scrolling',False))
 
@@ -570,6 +944,13 @@ class Main(QMainWindow):
     def _sync_vb(self):
         self.pm_vb2.setGeometry(self.pm.plotItem.vb.sceneBoundingRect())
 
+    def _format_tooltip_time(self, rel_sec):
+        if self.time_mode == 1 and self.t0_abs:
+            dt = self.t0_abs + timedelta(seconds=rel_sec)
+            return dt.strftime("%H:%M:%S")
+        else:
+            return f"{rel_sec:.1f}s"
+
     def _mm(self, pos):
         if self.pm.sceneBoundingRect().contains(pos):
             mp = self.pm.plotItem.vb.mapSceneToView(pos)
@@ -577,7 +958,9 @@ class Main(QMainWindow):
             if self.ts:
                 i = max(0, min(int(mp.x()), len(self.ts) - 1))
                 v, c, p = self.vs[i], self.cs[i], self.ps[i]
-                self.xm.setText(f" t={mp.x():.1f}s  {v:.3f}V  {c:.1f}mA  {p:.1f}mW ")
+                t_str = self._format_tooltip_time(mp.x())
+                c_str = f"{c:.0f}μA" if c < 1000 else f"{c/1000:.1f}mA"
+                self.xm.setText(f" {t_str}  {v:.3f}V  {c_str}  {p:.3f}mW ")
                 self.xm.setPos(mp); self.xm.show()
         else:
             self.xm.hide()
@@ -589,7 +972,9 @@ class Main(QMainWindow):
             if self.ts:
                 i = max(0, min(int(mp.x()), len(self.ts) - 1))
                 v, c, p = self.vs[i], self.cs[i], self.ps[i]
-                self.xc.setText(f" t={mp.x():.1f}s  {v:.3f}V  {c:.1f}mA  {p:.1f}mW ")
+                t_str = self._format_tooltip_time(mp.x())
+                c_str = f"{c:.0f}μA" if c < 1000 else f"{c/1000:.1f}mA"
+                self.xc.setText(f" {t_str}  {v:.3f}V  {c_str}  {p:.3f}mW ")
                 self.xc.setPos(mp); self.xc.show()
         else:
             self.xc.hide()
@@ -601,7 +986,8 @@ class Main(QMainWindow):
             if self.ts:
                 i = max(0, min(int(mp.x()), len(self.ts) - 1))
                 v = self.vs[i]
-                self.xvl.setText(f" t={mp.x():.1f}s  {v:.3f}V ")
+                t_str = self._format_tooltip_time(mp.x())
+                self.xvl.setText(f" {t_str}  {v:.3f}V ")
                 self.xvl.setPos(mp); self.xvl.show()
         else:
             self.xvl.hide()
@@ -638,7 +1024,6 @@ class Main(QMainWindow):
         if hasattr(self, 'analysis_mini_btn') and self.analysis_mini_btn:
             self.analysis_mini_btn.close()
             self.analysis_mini_btn = None
-        self.floating_btns.hide()
         self.statusBar().showMessage("选区已清空")
 
     def _get_active_plot(self):
@@ -689,7 +1074,8 @@ class Main(QMainWindow):
                     if self.sel_start is None:
                         self._clear_selection()
                         self.sel_start=mp.x()
-                        self.statusBar().showMessage(f"已选择起点: {mp.x():.1f}s，请点击终点")
+                        t_str = self._format_tooltip_time(mp.x())
+                        self.statusBar().showMessage(f"已选择起点: {t_str}，请点击终点")
                         self._draw_sel_line(plot, mp.x())
                     else:
                         t0=min(self.sel_start,mp.x()); t1=max(self.sel_start,mp.x())
@@ -766,14 +1152,6 @@ class Main(QMainWindow):
             brush=pg.mkBrush(74, 158, 255, 50), pen=pg.mkPen(color="#4a9eff", width=1))
         self.sel_region_rect.sigRegionChanged.connect(self._on_sel_region_changed)
         plot.addItem(self.sel_region_rect)
-        # Show floating buttons at top-right of plot
-        self._position_floating_btns(plot)
-
-    def _position_floating_btns(self, plot):
-        """Position floating buttons at top-right of main window"""
-        self.floating_btns.move(self.width() - self.floating_btns.width() - 10, 10)
-        self.floating_btns.show()
-        self.floating_btns.raise_()
 
     def _on_sel_region_changed(self):
         """Update analysis when selection region is resized"""
@@ -809,7 +1187,9 @@ class Main(QMainWindow):
 
         # Show floating analysis panel
         self._show_floating_analysis(t0, t1, avg_v, avg_c, avg_p, charge, energy, dt, len(idx), freq)
-        self.statusBar().showMessage(f"选区分析: {t0:.1f}s ~ {t1:.1f}s | 平均功率: {avg_p:.1f}mW | 能量: {energy:.2f}μWh")
+        t0_str = self._format_tooltip_time(t0)
+        t1_str = self._format_tooltip_time(t1)
+        self.statusBar().showMessage(f"选区分析: {t0_str} ~ {t1_str} | 平均功率: {avg_p:.1f}mW | 能量: {energy:.2f}μWh")
 
     def _show_floating_analysis(self, t0, t1, avg_v, avg_c, avg_p, charge, energy, dt, count, freq=0):
         """Show independent analysis panel"""
@@ -824,7 +1204,7 @@ class Main(QMainWindow):
         
         self.analysis_win = QMainWindow(self)
         self.analysis_win.setMinimumSize(300, 350)
-        self.analysis_win.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.analysis_win.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.Tool)
         
         central = QWidget()
         self.analysis_win.setCentralWidget(central)
@@ -846,33 +1226,24 @@ class Main(QMainWindow):
         central.mouseMoveEvent = _move
         central.mouseReleaseEvent = _release
         
-        # New analysis panel
-        self.region_panel = RegionAnalysisPanel()
+        is_dark = self.theme_idx != 1
+        
+        self.region_panel = RegionAnalysisPanel(is_dark=is_dark)
         self.region_panel.update_avg(avg_v, avg_c, avg_p)
         self.region_panel.update_max(max(vr), max(cr))
         self.region_panel.update_min(min(vr), min(cr))
         self.region_panel.update_energy(charge, energy)
         self.region_panel.update_time(dt, freq)
-        
+        self.region_panel.screenshot_requested.connect(self._screenshot_region)
+        self.region_panel.report_requested.connect(self._generate_report)
+        self.region_panel.minimize_requested.connect(self._minimize_analysis)
+        self.region_panel.close_requested.connect(self._close_analysis)
+
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.region_panel)
         
-        # Minimize and Close buttons
-        btn_row = QHBoxLayout()
-        btn_row.setContentsMargins(8, 0, 8, 4)
-        btn_mini = QPushButton("-")
-        btn_mini.setFixedSize(30, 30)
-        btn_mini.clicked.connect(self._minimize_analysis)
-        btn_row.addWidget(btn_mini)
-        btn_row.addStretch()
-        btn_close = QPushButton("关闭")
-        btn_close.clicked.connect(self._close_analysis)
-        btn_row.addWidget(btn_close)
-        layout.addLayout(btn_row)
-        
-        # Position near the selection region
         plot = self._get_active_plot()
         if plot:
             mid_x = (t0 + t1) / 2
@@ -882,15 +1253,10 @@ class Main(QMainWindow):
             global_pos = self.mapToGlobal(scene_pos.toPoint())
             self.analysis_win.move(global_pos.x() + 30, global_pos.y() - 50)
         
-        self.analysis_win.setStyleSheet("""
-            QMainWindow { background: #1e1e2e; }
-            QWidget { background: #1e1e2e; }
-            QPushButton {
-                background: #313244; color: #cdd6f4; border: 1px solid #45475a;
-                border-radius: 6px; padding: 8px 16px; font-weight: bold;
-            }
-            QPushButton:hover { background: #45475a; }
-        """)
+        try:
+            self._apply_analysis_win_theme()
+        except Exception as e:
+            logger.warning(f"主题更新失败: {e}")
         self.analysis_win.show()
         self.analysis_win.raise_()
     
@@ -926,18 +1292,30 @@ class Main(QMainWindow):
             self.analysis_mini_btn.hide()
     
     def _close_analysis(self):
-        """Close analysis window and hide floating buttons"""
+        """Close analysis window and clear selection"""
         if hasattr(self, 'analysis_win') and self.analysis_win:
             self.analysis_win.close()
             self.analysis_win = None
         if hasattr(self, 'analysis_mini_btn') and self.analysis_mini_btn:
             self.analysis_mini_btn.close()
             self.analysis_mini_btn = None
-        self.floating_btns.hide()
+        # Clear selection region from plot
+        if self.sel_region_rect:
+            plot = self._get_active_plot()
+            if plot:
+                try: plot.removeItem(self.sel_region_rect)
+                except: pass
+            self.sel_region_rect = None
+        if self.sel_line:
+            plot = self._get_active_plot()
+            if plot:
+                try: plot.removeItem(self.sel_line)
+                except: pass
+            self.sel_line = None
+        self.sel_start = None
         # Sync toggle to off
         if self.btn_region.isChecked():
             self.btn_region.setChecked(False)
-            self.btn_region.setText("开启选区分析")
             self.act_region.setText("选区分析:关")
             self.statusBar().showMessage("选区分析已关闭")
 
@@ -950,9 +1328,19 @@ class Main(QMainWindow):
         content=QWidget()
         lay=QVBoxLayout(content); lay.setSpacing(12); lay.setContentsMargins(16,12,16,12)
 
+        # === 设备模式 ===
+        g_mode=QGroupBox("设备模式")
+        mode_lay=QHBoxLayout(g_mode); mode_lay.setSpacing(12)
+        mode_lay.addWidget(QLabel("工作模式:"))
+        self.cb_mode=QComboBox(); self.cb_mode.addItems(["GPIB", "LuatOS串口"])
+        self.cb_mode.currentIndexChanged.connect(self._on_device_mode_changed)
+        mode_lay.addWidget(self.cb_mode)
+        mode_lay.addStretch()
+        lay.addWidget(g_mode)
+
         # === GPIB连接控制 ===
-        g_gpi=QGroupBox("GPIB连接控制")
-        gpi_lay=QGridLayout(g_gpi); gpi_lay.setSpacing(8)
+        self.g_gpi=QGroupBox("GPIB连接控制")
+        gpi_lay=QGridLayout(self.g_gpi); gpi_lay.setSpacing(8)
         gpi_lay.addWidget(QLabel("电源型号:"),0,0)
         self.cb_power=QComboBox(); self.cb_power.setEditable(True); self.cb_power.addItems(["66309D","66312D","66321D","66332A","66342A"])
         self.cb_power.setCurrentText("663XX")
@@ -965,7 +1353,22 @@ class Main(QMainWindow):
         gpi_lay.addWidget(self.spin_a,1,1)
         self.btn_co=QPushButton("连接设备"); self.btn_co.setObjectName("conn")
         self.btn_co.clicked.connect(self._connect); gpi_lay.addWidget(self.btn_co,1,2)
-        lay.addWidget(g_gpi)
+        lay.addWidget(self.g_gpi)
+
+        # === 串口连接控制 ===
+        self.g_ser=QGroupBox("USB连接控制")
+        ser_lay=QGridLayout(self.g_ser); ser_lay.setSpacing(8)
+        ser_lay.addWidget(QLabel("设备:"),0,0)
+        self.cb_serial_port=QComboBox()
+        self.cb_serial_port.addItem("(扫描USB设备)")
+        ser_lay.addWidget(self.cb_serial_port,0,1)
+        self.btn_scan=QPushButton("扫描设备"); self.btn_scan.clicked.connect(self._scan_serial)
+        ser_lay.addWidget(self.btn_scan,0,2)
+        self.btn_ser_co=QPushButton("连接设备"); self.btn_ser_co.setObjectName("conn")
+        self.btn_ser_co.clicked.connect(self._connect)
+        ser_lay.addWidget(self.btn_ser_co,1,1)
+        self.g_ser.hide()
+        lay.addWidget(self.g_ser)
 
         # === Row 1: 设备输出控制 ===
         go=QGroupBox("设备输出控制")
@@ -977,8 +1380,8 @@ class Main(QMainWindow):
         self.sc=QDoubleSpinBox(); self.sc.setRange(0,2000); self.sc.setValue(1000)
         go_lay.addWidget(self.sc,0,3)
         btn_row=QHBoxLayout(); btn_row.setSpacing(8)
-        self.btn_on=QPushButton("开启输出"); self.btn_on.setObjectName("on"); self.btn_on.clicked.connect(lambda: g_send("OUTP ON"))
-        self.btn_off=QPushButton("关闭输出"); self.btn_off.setObjectName("off"); self.btn_off.clicked.connect(lambda: g_send("OUTP OFF"))
+        self.btn_on=QPushButton("开启输出"); self.btn_on.setObjectName("on"); self.btn_on.clicked.connect(lambda: self._set_output(True))
+        self.btn_off=QPushButton("关闭输出"); self.btn_off.setObjectName("off"); self.btn_off.clicked.connect(lambda: self._set_output(False))
         ba=QPushButton("应用设置"); ba.clicked.connect(self._apply)
         btn_row.addWidget(self.btn_on); btn_row.addWidget(self.btn_off); btn_row.addWidget(ba); btn_row.addStretch()
         go_lay.addLayout(btn_row,1,0,1,4)
@@ -995,21 +1398,27 @@ class Main(QMainWindow):
         self.cb_coord=QComboBox(); self.cb_coord.addItems(["自适应坐标","固定最大值坐标","对数坐标"])
         self.cb_coord.currentIndexChanged.connect(lambda i: setattr(self,'coord_mode',i))
         g1_lay.addWidget(self.cb_coord,0,1)
-        self.chk_auto=QPushButton("自动适应"); self.chk_auto.setCheckable(True)
-        self.chk_auto.setChecked(True); self.chk_auto.clicked.connect(self._auto_adapt)
+        self.chk_auto=RoundSwitch(); self.chk_auto.setChecked(True)
+        self.chk_auto.stateChanged.connect(self._auto_adapt)
         g1_lay.addWidget(self.chk_auto,0,2)
         g1_lay.addWidget(QLabel("跟踪线位置:"),1,0)
-        self.btn_tl=QPushButton("左侧"); self.btn_tl.clicked.connect(lambda:self._ts("left"))
-        self.btn_tr=QPushButton("右侧"); self.btn_tr.setObjectName("conn"); self.btn_tr.clicked.connect(lambda:self._ts("right"))
-        g1_lay.addWidget(self.btn_tl,1,1); g1_lay.addWidget(self.btn_tr,1,2)
+        track_row=QHBoxLayout(); track_row.setSpacing(6)
+        self.lb_track_left=QLabel("左侧"); self.lb_track_right=QLabel("右侧")
+        self.sw_track=RoundSwitch(); self.sw_track.setChecked(self.track_side=="right")
+        self.sw_track.stateChanged.connect(lambda s: self._ts("right" if s else "left"))
+        track_row.addWidget(self.lb_track_left); track_row.addWidget(self.sw_track); track_row.addWidget(self.lb_track_right)
+        track_row.addStretch()
+        g1_lay.addLayout(track_row,1,1,1,2)
         left_col.addWidget(g1)
 
         # 选区分析
         g2=QGroupBox("选区分析")
-        g2_lay=QVBoxLayout(g2); g2_lay.setSpacing(4)
-        self.btn_region=QPushButton("开启选区分析"); self.btn_region.setObjectName("test")
-        self.btn_region.setCheckable(True); self.btn_region.clicked.connect(self._toggle_region)
+        g2_lay=QHBoxLayout(g2); g2_lay.setSpacing(8)
+        self.btn_region=RoundSwitch()
+        self.btn_region.stateChanged.connect(self._toggle_region)
         g2_lay.addWidget(self.btn_region)
+        g2_lay.addWidget(QLabel("启用选区分析"))
+        g2_lay.addStretch()
         left_col.addWidget(g2)
         left_col.addStretch()
         display_row.addLayout(left_col)
@@ -1042,9 +1451,15 @@ class Main(QMainWindow):
         self.spin_lw=QDoubleSpinBox(); self.spin_lw.setRange(0.5,10); self.spin_lw.setValue(2); self.spin_lw.setSingleStep(0.5); self.spin_lw.setSuffix(" px")
         g4_lay.addWidget(self.spin_lw,1,1)
         g4_lay.addWidget(QLabel("数据字体:"),2,0)
-        self.spin_font_size=QSpinBox(); self.spin_font_size.setRange(8,20); self.spin_font_size.setValue(12); self.spin_font_size.setSuffix(" px")
+        self.spin_font_size=QSpinBox(); self.spin_font_size.setRange(8,36); self.spin_font_size.setValue(18); self.spin_font_size.setSuffix(" px")
         self.spin_font_size.valueChanged.connect(self._update_data_font_size)
         g4_lay.addWidget(self.spin_font_size,2,1)
+        g4_lay.addWidget(QLabel("px"),2,2)
+        self.chk_bold=RoundSwitch(); self.chk_bold.setChecked(True)
+        self.chk_bold.stateChanged.connect(self._update_data_font_size_bold)
+        bold_lay=QHBoxLayout(); bold_lay.setSpacing(6)
+        bold_lay.addWidget(self.chk_bold); bold_lay.addWidget(QLabel("加粗")); bold_lay.addStretch()
+        g4_lay.addLayout(bold_lay,3,0,1,3)
         right_col.addWidget(g4)
         right_col.addStretch()
         display_row.addLayout(right_col)
@@ -1056,7 +1471,7 @@ class Main(QMainWindow):
         g_time_lay=QGridLayout(g_time); g_time_lay.setSpacing(8)
         g_time_lay.addWidget(QLabel("时间轴显示:"),0,0)
         self.cb_time_mode=QComboBox(); self.cb_time_mode.addItems(["相对时间(秒)","系统时间"])
-        self.cb_time_mode.currentIndexChanged.connect(lambda i: setattr(self,'time_mode',i))
+        self.cb_time_mode.currentIndexChanged.connect(self._switch_time_mode)
         g_time_lay.addWidget(self.cb_time_mode,0,1)
         g_time_lay.addWidget(QLabel("采样率(ms):"),0,2)
         g_time_lay.addWidget(self.cb_sample,0,3)
@@ -1098,16 +1513,47 @@ class Main(QMainWindow):
         parent_layout.setContentsMargins(0,0,0,0)
         parent_layout.addWidget(scroll)
 
+    def _on_device_mode_changed(self, idx):
+        modes = ["gpib", "luatos"]
+        self.device_mode = modes[idx]
+        self.g_gpi.setVisible(self.device_mode == "gpib")
+        self.g_ser.setVisible(self.device_mode == "luatos")
+        self._update_connect_btn()
+        self.statusBar().showMessage(f"设备模式: {'GPIB' if self.device_mode=='gpib' else 'LuatOS串口'}")
+
+    def _update_connect_btn(self):
+        if self.device_mode == "gpib":
+            connected = gpib_ud >= 0
+            self.btn_co.setText("断开设备" if connected else "连接设备")
+        else:
+            connected = _libusb_dev is not None
+            self.btn_ser_co.setText("断开设备" if connected else "连接设备")
+
+    def _scan_serial(self):
+        ports = s_scan()
+        self.cb_serial_port.clear()
+        if ports:
+            self.cb_serial_port.addItems(ports)
+            self.statusBar().showMessage(f"发现 {len(ports)} 个 USB 设备")
+        else:
+            self.cb_serial_port.addItem("(无设备)")
+            self.statusBar().showMessage("未发现 IotPower-cc 设备")
+
+    def _set_output(self, on):
+        cmd = "OUTP ON" if on else "OUTP OFF"
+        if self.device_mode == "gpib":
+            g_send(cmd)
+        elif self.device_mode == "luatos":
+            s_send(cmd)
+
     def _auto_adapt(self):
         if self.chk_auto.isChecked():
-            self.chk_auto.setText("自动适应坐标")
             self.pm.plotItem.vb.enableAutoRange(axis=self.pm.plotItem.vb.YAxis)
             self.pm_vb2.enableAutoRange(axis=self.pm_vb2.YAxis)
             # Set X axis minimum to 0
             self.pm.plotItem.vb.enableAutoRange(axis=self.pm.plotItem.vb.XAxis, enable=False)
             self.pm.plotItem.vb.setXRange(0, max(self.ts[-1] if self.ts else 10, 10), padding=0)
         else:
-            self.chk_auto.setText("固定坐标")
             self.pm.plotItem.vb.enableAutoRange(axis=self.pm.plotItem.vb.YAxis, enable=False)
             self.pm_vb2.enableAutoRange(axis=self.pm_vb2.YAxis, enable=False)
             cmin=self.spin_cmin.value(); cmax=self.spin_cmax.value()
@@ -1117,42 +1563,30 @@ class Main(QMainWindow):
 
     def _ts(self, s):
         self.track_side=s
-        self.btn_tl.setStyleSheet("background:#a6e3a1;" if s=="left" else "")
-        self.btn_tr.setStyleSheet("background:#a6e3a1;" if s=="right" else "")
+        self.lb_track_left.setStyleSheet(f"color:{'#a6e3a1' if s=='left' else '#6c7086'};font-weight:bold")
+        self.lb_track_right.setStyleSheet(f"color:{'#a6e3a1' if s=='right' else '#6c7086'};font-weight:bold")
 
     def _toggle_region(self):
         if self.btn_region.isChecked():
-            self.btn_region.setText("关闭选区分析")
             self.act_region.setText("选区分析:开")
             self.statusBar().showMessage("选区分析已开启：左键点击第1个点设置起点，再点击第2个点设置终点")
-            # Show floating buttons
-            plot = self._get_active_plot()
-            if plot: self._position_floating_btns(plot)
             # Auto-analyze existing selection if present
             if self.sel_region_rect:
                 r = self.sel_region_rect.getRegion()
                 self._show_analysis(r[0], r[1])
         else:
-            self.btn_region.setText("开启选区分析")
             self.act_region.setText("选区分析:关")
             self.sel_start=None
             # Close analysis window
             if hasattr(self, 'analysis_win') and self.analysis_win:
                 self.analysis_win.close()
                 self.analysis_win = None
-            # Hide floating buttons
-            if hasattr(self, 'floating_btns') and self.floating_btns:
-                self.floating_btns.hide()
             self.statusBar().showMessage("选区分析已关闭")
 
     def _toggle_region_tb(self):
         if self.act_region.text()=="选区分析:关":
             self.act_region.setText("选区分析:开")
             self.btn_region.setChecked(True)
-            self.btn_region.setText("关闭选区分析")
-            # Show floating buttons
-            plot = self._get_active_plot()
-            if plot: self._position_floating_btns(plot)
             # Auto-analyze existing selection if present
             if self.sel_region_rect:
                 r = self.sel_region_rect.getRegion()
@@ -1160,14 +1594,10 @@ class Main(QMainWindow):
         else:
             self.act_region.setText("选区分析:关")
             self.btn_region.setChecked(False)
-            self.btn_region.setText("开启选区分析")
             # Close analysis window
             if hasattr(self, 'analysis_win') and self.analysis_win:
                 self.analysis_win.close()
                 self.analysis_win = None
-            # Hide floating buttons
-            if hasattr(self, 'floating_btns') and self.floating_btns:
-                self.floating_btns.hide()
 
     def _mode(self):
         if self.act_mode.text()=="切换到合并模式":
@@ -1199,6 +1629,11 @@ class Main(QMainWindow):
             QMessageBox.warning(self, "提示", "请先选择分析区域")
             return
         
+        analysis_was_visible = False
+        if hasattr(self, 'analysis_win') and self.analysis_win and self.analysis_win.isVisible():
+            analysis_was_visible = True
+            self.analysis_win.hide()
+        
         # Load saved settings
         s = QSettings("PG-Power", "report")
         saved_products = s.value("products", [], type=list)
@@ -1210,16 +1645,29 @@ class Main(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("生成测试报告")
         dlg.setMinimumWidth(400)
-        dlg.setStyleSheet("""
-            QDialog { background: #1e1e2e; color: #cdd6f4; }
-            QLabel { color: #bac2de; }
-            QComboBox, QLineEdit { background: #11111b; color: #cdd6f4; border: 1px solid #313244;
-                border-radius: 4px; padding: 6px 10px; }
-            QPushButton { background: #313244; color: #cdd6f4; border: 1px solid #45475a;
-                border-radius: 6px; padding: 8px 16px; font-weight: bold; }
-            QPushButton:hover { background: #45475a; }
-            QPushButton#ok { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
-        """)
+        is_dark = self.theme_idx != 1
+        if is_dark:
+            dlg.setStyleSheet("""
+                QDialog { background: #1e1e2e; color: #cdd6f4; }
+                QLabel { color: #bac2de; }
+                QComboBox, QLineEdit { background: #11111b; color: #cdd6f4; border: 1px solid #313244;
+                    border-radius: 4px; padding: 6px 10px; }
+                QPushButton { background: #313244; color: #cdd6f4; border: 1px solid #45475a;
+                    border-radius: 6px; padding: 8px 16px; font-weight: bold; }
+                QPushButton:hover { background: #45475a; }
+                QPushButton#ok { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
+            """)
+        else:
+            dlg.setStyleSheet("""
+                QDialog { background: #eff1f5; color: #4c4f69; }
+                QLabel { color: #5c5f77; }
+                QComboBox, QLineEdit { background: #eff1f5; color: #4c4f69; border: 1px solid #ccd0da;
+                    border-radius: 4px; padding: 6px 10px; }
+                QPushButton { background: #ccd0da; color: #4c4f69; border: 1px solid #bcc0cc;
+                    border-radius: 6px; padding: 8px 16px; font-weight: bold; }
+                QPushButton:hover { background: #bcc0cc; }
+                QPushButton#ok { background: #1e66f5; color: #ffffff; border-color: #1e66f5; }
+            """)
         layout = QGridLayout(dlg)
         
         layout.addWidget(QLabel("被测产品名称:"), 0, 0)
@@ -1262,7 +1710,9 @@ class Main(QMainWindow):
         btn_row.addWidget(btn_ok)
         layout.addLayout(btn_row, 3, 0, 1, 2)
         
-        if dlg.exec_() != QDialog.Accepted: return
+        if dlg.exec_() != QDialog.Accepted:
+            if analysis_was_visible: self.analysis_win.show()
+            return
         
         product_name = product_input.currentText() if isinstance(product_input, CmB) else product_input.text()
         battery_v = float(volt_input.currentText() if isinstance(volt_input, CmB) else volt_input.text())
@@ -1287,6 +1737,7 @@ class Main(QMainWindow):
         
         # Generate report
         self._do_generate_report(product_name, battery_v, battery_mah)
+        if analysis_was_visible: self.analysis_win.show()
 
     def _do_generate_report(self, product_name, battery_v, battery_mah):
         """Generate PDF report using HTML layout for clean formatting"""
@@ -1297,89 +1748,136 @@ class Main(QMainWindow):
         if len(idx) < 2:
             QMessageBox.warning(self, "提示", "选区内数据不足")
             return
-        
+
         vr = [self.vs[i] for i in idx]
         cr = [self.cs[i] for i in idx]
         pr = [self.ps[i] for i in idx]
-        
+
         dt = self.ts[idx[-1]] - self.ts[idx[0]]
         avg_v = sum(vr) / len(vr)
         avg_c = sum(cr) / len(cr)
-        avg_p = sum(pr) / len(pr)
-        min_v = min(vr); min_c = min(cr); min_p = min(pr)
-        max_v = max(vr); max_c = max(cr); max_p = max(pr)
-        
-        charge = avg_c * dt / 3600 * 1000
-        energy = avg_p * dt / 3600
-        
-        avg_c_mah = avg_c / 1000
-        if avg_c_mah > 0:
-            est_hours = battery_mah / avg_c_mah
+        avg_p = avg_v * avg_c
+        min_v = min(vr); min_c = min(cr)
+        max_v = max(vr); max_c = max(cr)
+        min_p = min_v * min_c
+        max_p = max_v * max_c
+
+        charge_uah = avg_c * dt / 3600 * 1000
+        energy_uwh = avg_p * dt / 3600 * 1000
+
+        charge_mah = charge_uah / 1000
+        energy_mwh = energy_uwh / 1000
+
+        time_ratio = 86400 / dt if dt > 0 else 0
+        e_1d_mah = charge_mah * time_ratio
+        e_1d_mwh = energy_mwh * time_ratio
+        e_30d_mah = e_1d_mah * 30
+        e_30d_mwh = e_1d_mwh * 30
+
+        if e_1d_mah > 0:
+            est_hours = battery_mah / e_1d_mah * 24
             est_int_days = int(est_hours / 24)
             est_int_hours = int(est_hours - est_int_days * 24)
         else:
             est_int_days = 0; est_int_hours = 0
-        
+
         h = int(dt // 3600); mi = int((dt % 3600) // 60); s = dt % 60
         dur = f"{h:02d}:{mi:02d}:{s:06.3f}"
         gen_time = datetime.now().strftime('%Y/%m/%d %H:%M:%S')
-        charge_mah = charge / 1000
-        
-        fname, _ = QFileDialog.getSaveFileName(self, "保存报告", 
+
+        fname, _ = QFileDialog.getSaveFileName(self, "保存报告",
             f"{product_name}_power_report.pdf", "PDF (*.pdf)")
         if not fname: return
-        
+
         from PyQt5.QtPrintSupport import QPrinter
         from PyQt5.QtGui import QTextDocument
         
-        e_1d_val = energy * 86400 / dt / 1000 if dt > 0 else 0
-        e_30d_val = e_1d_val * 30
-        
-        html = f"""<html><head><style>
-body {{ font-family: "Microsoft YaHei", "SimSun", sans-serif; color: #000; margin: 0; padding: 20px; }}
-h1 {{ text-align: center; font-size: 26px; margin: 10px 0 3px 0; }}
-.ver {{ text-align: center; font-size: 9px; color: #666; margin: 3px 0; }}
-h2 {{ text-align: center; font-size: 18px; margin: 8px 0 12px 0; }}
-.device {{ font-size: 12px; margin-bottom: 8px; }}
-table {{ width: 100%; border-collapse: collapse; margin: 8px 0; }}
-th, td {{ border: 1px solid #999; padding: 5px 10px; text-align: center; font-size: 11px; }}
-th {{ background: #e8e8e8; font-weight: bold; }}
-td.left {{ text-align: left; font-weight: bold; }}
-.sec {{ font-size: 13px; font-weight: bold; margin: 12px 0 6px 0; }}
-.sub {{ font-size: 11px; margin: 4px 0; }}
-.est {{ font-size: 12px; font-weight: bold; margin: 8px 0; }}
-.foot {{ border-top: 2px solid #999; padding-top: 6px; margin-top: 12px; }}
-.foot td {{ border: none; padding: 2px 8px; text-align: left; font-size: 10px; }}
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+@page {{ size: A4; margin: 18mm 15mm; }}
+* {{ box-sizing: border-box; }}
+body {{ font-family: "Microsoft YaHei", "SimHei", "Arial", sans-serif; color: #1a1a1a; margin: 0; padding: 0; line-height: 1.6; }}
+
+/* === Header === */
+.header {{ text-align: center; padding: 24pt 0 12pt 0; border-bottom: 3pt solid #2563eb; margin-bottom: 18pt; }}
+.header h1 {{ font-size: 36pt; font-weight: 700; margin: 0 0 4pt 0; color: #2563eb; letter-spacing: 3pt; }}
+.header .ver {{ font-size: 11pt; color: #6b7280; margin: 0 0 6pt 0; }}
+.header h2 {{ font-size: 22pt; font-weight: 600; margin: 0; color: #111827; }}
+
+/* === Device Info === */
+.device-info {{ background: #f0f5ff; border-left: 4pt solid #2563eb; padding: 10pt 16pt; margin: 0 0 18pt 0; border-radius: 0 4pt 4pt 0; }}
+.device-info .label {{ font-size: 12pt; color: #6b7280; }}
+.device-info .value {{ font-size: 16pt; font-weight: 600; color: #111827; }}
+
+/* === Section Title === */
+.sec-title {{ font-size: 16pt; font-weight: 700; color: #2563eb; margin: 20pt 0 10pt 0; padding: 6pt 10pt; background: #eff6ff; border-left: 3pt solid #2563eb; border-radius: 0 4pt 4pt 0; }}
+
+/* === Data Table === */
+table {{ width: 100%; border-collapse: collapse; margin: 8pt 0 16pt 0; font-size: 13pt; }}
+th {{ background: #1e40af; color: #ffffff; font-weight: 600; padding: 10pt 14pt; text-align: center; font-size: 13pt; border: 1pt solid #1e3a8a; }}
+td {{ padding: 10pt 14pt; text-align: center; font-size: 13pt; border: 1pt solid #d1d5db; }}
+tr:nth-child(even) td {{ background: #f9fafb; }}
+tr:hover td {{ background: #eff6ff; }}
+td.left {{ text-align: left; font-weight: 600; color: #374151; }}
+td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #111827; }}
+
+/* === Estimate Box === */
+.est-box {{ background: #ecfdf5; border: 1.5pt solid #6ee7b7; border-radius: 6pt; padding: 16pt 20pt; margin: 16pt 0; }}
+.est-box .est-title {{ font-size: 16pt; font-weight: 700; color: #065f46; margin: 0 0 8pt 0; }}
+.est-box .est-value {{ font-size: 20pt; font-weight: 700; color: #047857; margin: 4pt 0; }}
+
+/* === Footer === */
+.footer {{ border-top: 2pt solid #d1d5db; padding-top: 10pt; margin-top: 20pt; }}
+.footer table {{ margin: 0; font-size: 11pt; }}
+.footer td {{ border: none; padding: 4pt 0; color: #6b7280; font-size: 11pt; }}
+.footer td:first-child {{ text-align: left; width: 130pt; }}
+.footer td:last-child {{ text-align: left; }}
 </style></head><body>
-<h1>Power</h1>
-<div class="ver">设备版本：1.3.0　　软件版本：3.0.0.0</div>
-<h2>功耗测试报告</h2>
-<div class="device">被测设备：{product_name}</div>
-<table>
-<tr><th></th><th>最小值</th><th>平均值</th><th>最大值</th></tr>
-<tr><td class="left">电流</td><td>{min_c:.3f} mA</td><td>{avg_c:.3f} mA</td><td>{max_c:.3f} mA</td></tr>
-<tr><td class="left">电压</td><td>{min_v:.3f} V</td><td>{avg_v:.3f} V</td><td>{max_v:.3f} V</td></tr>
-<tr><td class="left">功率</td><td>{min_p:.3f} mW</td><td>{avg_p:.3f} mW</td><td>{max_p:.3f} mW</td></tr>
-</table>
-<div class="sec">预估结果</div>
-<div class="sub">能量累计</div>
-<div class="sub">{battery_v}V电池</div>
-<table>
-<tr><th>电量</th><th>能量</th></tr>
-<tr><td>{charge:.3f} μAh</td><td>{energy:.3f} μWh</td></tr>
-</table>
-<table>
-<tr><th>本次测试</th><th>1天</th><th>30天</th></tr>
-<tr><td>{charge:.3f} μAh</td><td>{e_1d_val:.3f} mWh</td><td>{e_30d_val:.3f} mWh</td></tr>
-<tr><td>{charge_mah:.3f} mAh</td><td>{charge_mah:.3f} mAh</td><td>{charge_mah*30:.3f} mAh</td></tr>
-</table>
-<div class="est">预计{battery_mah}mAh电量，可用{est_int_days}天{est_int_hours}小时</div>
-<div class="foot">
-<table>
-<tr><td>报告测试时长</td><td>{dur}</td></tr>
-<tr><td>报告生成时间</td><td>{gen_time}</td></tr>
-</table>
+
+<div class="header">
+  <h1>PG-Power</h1>
+  <div class="ver">软件版本：v{REPORT_VERSION}</div>
+  <h2>功耗测试报告</h2>
 </div>
+
+<div class="device-info">
+  <span class="label">被测设备：</span><span class="value">{product_name}</span>
+</div>
+
+<div class="sec-title">一、测量数据</div>
+<table>
+  <tr><th>测试项</th><th>最小值</th><th>平均值</th><th>最大值</th></tr>
+  <tr><td class="left">电流 (mA)</td><td class="right">{min_c:.3f}</td><td class="right">{avg_c:.3f}</td><td class="right">{max_c:.3f}</td></tr>
+  <tr><td class="left">电压 (V)</td><td class="right">{min_v:.3f}</td><td class="right">{avg_v:.3f}</td><td class="right">{max_v:.3f}</td></tr>
+  <tr><td class="left">功率 (mW)</td><td class="right">{min_p:.3f}</td><td class="right">{avg_p:.3f}</td><td class="right">{max_p:.3f}</td></tr>
+</table>
+
+<div class="sec-title">二、能量累计</div>
+<table>
+  <tr><th>项目</th><th>本次测试</th><th>1 天</th><th>30 天</th></tr>
+  <tr><td class="left">电量</td><td class="right">{charge_uah:.3f} μAh</td><td class="right">{e_1d_mah:.3f} mAh</td><td class="right">{e_30d_mah:.3f} mAh</td></tr>
+  <tr><td class="left">能量</td><td class="right">{energy_uwh:.3f} μWh</td><td class="right">{e_1d_mwh:.3f} mWh</td><td class="right">{e_30d_mwh:.3f} mWh</td></tr>
+</table>
+
+<div class="sec-title">三、电池参数与预估续航</div>
+<table>
+  <tr><th>参数</th><th>规格</th></tr>
+  <tr><td class="left">电池额定电压</td><td class="right">{battery_v} V</td></tr>
+  <tr><td class="left">电池额定容量</td><td class="right">{battery_mah} mAh</td></tr>
+</table>
+
+<div class="est-box">
+  <div class="est-title">预估续航</div>
+  <div class="est-value">预计可用 {est_int_days} 天 {est_int_hours} 小时</div>
+</div>
+
+<div class="footer">
+  <table>
+    <tr><td>报告测试时长</td><td>{dur}</td></tr>
+    <tr><td>报告生成时间</td><td>{gen_time}</td></tr>
+  </table>
+</div>
+
 </body></html>"""
         
         printer = QPrinter(QPrinter.HighResolution)
@@ -1394,25 +1892,13 @@ td.left {{ text-align: left; font-weight: bold; }}
         QMessageBox.information(self, "生成成功", f"报告已保存:\n{fname}")
         logger.info(f"报告: {fname}")
         os.startfile(fname)
-        if self.act_mode.text()=="切换到合并模式":
-            self.act_mode.setText("切换到双波形模式")
-            self.pc.hide(); self.pv.hide(); self.pm.show()
-            if self.btn_region.isChecked():
-                self.region.setVisible(False); self.region_m.setVisible(True)
-            # Auto-adapt off for merged mode
-            self.chk_auto.setChecked(False)
-            self._auto_adapt()
-        else:
-            self.act_mode.setText("切换到合并模式")
-            self.pm.hide(); self.pc.show(); self.pv.show()
-            if self.btn_region.isChecked():
-                self.region.setVisible(True); self.region_m.setVisible(False)
 
     # ===== Tab3: Analysis =====
     def _init_analysis(self, parent):
         lay=QVBoxLayout(parent)
         hint=QLabel("在波形图上右键拖动选取区域，此处显示分析结果")
         hint.setStyleSheet("color:#6c7086;font-size:12px;padding:8px"); lay.addWidget(hint)
+        self.analysis_hint = hint
         g=QGroupBox("选区分析"); gl=QVBoxLayout(g)
         self.rv=QLabel("平均电压: -- V"); self.rc=QLabel("平均电流: -- mA")
         self.rp=QLabel("平均功率: -- mW"); self.rmx=QLabel("最大电流: -- mA")
@@ -1428,31 +1914,59 @@ td.left {{ text-align: left; font-weight: bold; }}
         lay=QVBoxLayout(parent)
         bl=QHBoxLayout()
         br=QPushButton("运行脚本"); br.clicked.connect(self._run); bl.addWidget(br)
+        bs=QPushButton("发送到设备"); bs.clicked.connect(self._send_script); bl.addWidget(bs)
         bc=QPushButton("清空日志"); bc.clicked.connect(lambda:self.le.clear()); bl.addWidget(bc)
         lay.addLayout(bl)
         sp=QSplitter(Qt.Vertical)
-        self.se=QTextEdit(); self.se.setPlaceholderText("-- Lua风格脚本\n-- 示例:\ng_send('VOLT 4.2')\ng_send('OUTP ON')")
+        self.se=QTextEdit()
+        self.se.setPlaceholderText("-- Lua 脚本\n-- GPIB 操作:\ng_send('VOLT 4.2')\nlocal v = g_qry('MEAS:VOLT?')\nprint(v)\n\n-- 串口操作 (LuatOS):\ns_send('STATUS?')\nlocal resp = s_qry('STATUS?')\nprint(resp)")
         sp.addWidget(self.se); self.le=QTextEdit(); self.le.setReadOnly(True); self.le.setPlaceholderText("日志...")
         sp.addWidget(self.le); lay.addWidget(sp)
 
     # ===== Actions =====
     def _connect(self):
+        if self.device_mode == "gpib":
+            self._connect_gpib()
+        else:
+            self._connect_serial()
+
+    def _connect_gpib(self):
         if not GPIB_OK: QMessageBox.warning(self,"提示","GPIB驱动未加载"); return
         board=self.spin_board.value(); addr=self.spin_a.value()
         if gpib_ud>=0: g_close(); self.btn_co.setText("连接设备"); self.statusBar().showMessage("已断开")
         elif g_open(board,addr): self.btn_co.setText("断开设备"); self.statusBar().showMessage(f"已连接 (板卡{board} 地址{addr})")
         else: QMessageBox.critical(self,"失败","连接失败")
 
+    def _connect_serial(self):
+        if _libusb_dev:
+            s_close()
+            self.btn_ser_co.setText("连接设备")
+            self.statusBar().showMessage("USB设备已断开")
+        elif s_open():
+            self.btn_ser_co.setText("断开设备")
+            self.statusBar().showMessage(f"IotPower-cc 已连接")
+        else:
+            QMessageBox.critical(self, "失败", "未找到 IotPower-cc 设备，请确认设备已连接")
+
     def _start(self):
-        if not self.test_mode and (not GPIB_OK or gpib_ud<0):
-            QMessageBox.warning(self,"提示","请先连接设备或启用测试模式"); return
+        if not self.test_mode:
+            if self.device_mode == "gpib" and (not GPIB_OK or gpib_ud < 0):
+                QMessageBox.warning(self, "提示", "请先连接GPIB设备或启用测试模式"); return
+            elif self.device_mode == "luatos" and (not USB_OK or not _libusb_dev):
+                QMessageBox.warning(self, "提示", "请先连接 USB 设备或启用测试模式"); return
         if not self.collecting:
+            self.ts.clear(); self.vs.clear(); self.cs.clear(); self.ps.clear()
+            self.e_mwh=0; self.max_c=0; self.min_c=float("inf"); self.save_count=0
             self.collecting=True; self.t0=time.time(); self.t0_abs=datetime.now(); self.phi=0; self.pe=0
             # Set time axis start time
             if self.time_mode:
                 if hasattr(self, 'time_axis_m'): self.time_axis_m.setStartTime(self.t0_abs)
                 if hasattr(self, 'time_axis_c'): self.time_axis_c.setStartTime(self.t0_abs)
                 if hasattr(self, 'time_axis_v'): self.time_axis_v.setStartTime(self.t0_abs)
+            # Reset view to origin
+            for pw in [self.pm, self.pc, self.pv]:
+                pw.plotItem.vb.setXRange(0, 60, padding=0)
+            logger.info(f"采集启动: mode={self.device_mode}, USB_OK={USB_OK}, dev={_libusb_dev}")
             threading.Thread(target=self._loop,daemon=True).start()
             self.statusBar().showMessage("采集中...")
             logger.info("采集已启动")
@@ -1463,20 +1977,40 @@ td.left {{ text-align: left; font-weight: bold; }}
 
     def _toggle_test(self):
         if self.btn_te.text()=="测试模式":
-            self.test_mode=True; self.btn_te.setText("退出测试"); self._clear(); self._start()
+            self.test_mode=True; self.btn_te.setText("退出测试"); self._clear(force=True); self._start()
         else: self.test_mode=False; self.btn_te.setText("测试模式"); self._stop()
 
     def _loop(self):
+        loop_cnt = 0
+        sample_cnt = 0
+        logger.info("_loop线程已启动")
         while self.collecting:
             try:
                 if self.test_mode:
                     ph=self.phases[self.phi]; self.pe+=1
                     if self.pe>=ph["d"] and self.phi<len(self.phases)-1: self.phi+=1; self.pe=0
                     v=ph["v"]+random.uniform(-0.02,0.02); c=(ph["c"]+random.gauss(0,ph["s"]))*1000
+                elif self.device_mode == "luatos":
+                    sample = s_readline()
+                    if sample is not None:
+                        v_raw, c_raw = sample
+                        # Calibration: v_raw~16985→4.2V, c_raw~688→69.5uA
+                        # v = v_raw / 4044 (V)
+                        # c = c_raw / 9900 (mA) = c_raw / 9.9 (uA)
+                        v = v_raw / 4044.0
+                        c = c_raw / 9.9  # uA
+                        sample_cnt += 1
+                        if sample_cnt <= 3 or sample_cnt % 200 == 0:
+                            logger.info(f"#{sample_cnt} v_raw={v_raw} c_raw={c_raw} → V={v:.3f} C={c:.1f}uA")
+                    else:
+                        loop_cnt += 1
+                        if loop_cnt % 200 == 0:
+                            logger.warning(f"无数据 {loop_cnt}次")
+                        continue
                 else:
                     vs=g_qry("MEAS:VOLT?"); cs=g_qry("MEAS:CURR?")
                     v=float(vs) if vs else 0; c=float(cs)*1000 if cs else 0
-                t=time.time()-self.t0; p=v*c
+                t=time.time()-self.t0; p=v*c/1000.0  # V * uA / 1000 = mW
                 with lock:
                     self.ts.append(t); self.vs.append(v); self.cs.append(c); self.ps.append(p)
                     self.max_c=max(self.max_c,c); self.min_c=min(self.min_c,c)
@@ -1492,7 +2026,7 @@ td.left {{ text-align: left; font-weight: bold; }}
         try:
             path=os.path.join(log_dir, f"auto_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
             with open(path,"w",newline="",encoding="utf-8") as f:
-                w=csv.writer(f); w.writerow(["时间","电压(V)","电流(mA)","功率(mW)"])
+                w=csv.writer(f); w.writerow(["时间","电压(V)","电流(uA)","功率(mW)"])
                 for t,v,c,p in zip(self.ts,self.vs,self.cs,self.ps): w.writerow([f"{t:.4f}",f"{v:.4f}",f"{c:.4f}",f"{p:.4f}"])
             logger.info(f"自动保存: {path}")
         except Exception as e: logger.error(f"自动保存失败: {e}")
@@ -1557,7 +2091,8 @@ td.left {{ text-align: left; font-weight: bold; }}
             # Current: label at LEFT axis edge (in scene coordinates)
             self.tc_m.setPos(lc)
             scene_pos = self.pm.plotItem.vb.mapViewToScene(pg.Point(0, lc))
-            self.lmc.setText(f" {lc:.1f}mA ")
+            c_label = f"{lc:.0f}μA" if lc < 1000 else f"{lc/1000:.1f}mA"
+            self.lmc.setText(f" {c_label} ")
             self.lmc.setPos(scene_pos.x(), scene_pos.y())
             self.lmc.show()
             # Voltage: label at curve tip (in scene coordinates)
@@ -1573,11 +2108,14 @@ td.left {{ text-align: left; font-weight: bold; }}
             self.lmv.setText(f" {lv:.3f}V ")
             self.lmv.setPos(scene_pos_v.x(), scene_pos_v.y())
             self.lmv.show()
+            # Vertical time indicator line (merged)
+            self.tm_m.setPos(self.ts[-1])
         else:
             # Current: label at LEFT axis edge (in scene coordinates)
             self.tc.setPos(lc)
             scene_pos_c = self.pc.plotItem.vb.mapViewToScene(pg.Point(0, lc))
-            self.lc.setText(f" {lc:.1f}mA ")
+            c_label = f"{lc:.0f}μA" if lc < 1000 else f"{lc/1000:.1f}mA"
+            self.lc.setText(f" {c_label} ")
             self.lc.setPos(scene_pos_c.x(), scene_pos_c.y())
             self.lc.show()
             # Voltage: label at LEFT axis edge (in scene coordinates)
@@ -1585,22 +2123,30 @@ td.left {{ text-align: left; font-weight: bold; }}
             scene_pos_v2 = self.pv.plotItem.vb.mapViewToScene(pg.Point(0, lv))
             self.lvl.setText(f" {lv:.3f}V ")
             self.lvl.setPos(scene_pos_v2.x(), scene_pos_v2.y())
+            # Vertical time indicator lines (dual)
+            self.tm_c.setPos(self.ts[-1])
+            self.tm_v.setPos(self.ts[-1])
             self.lvl.show()
 
         # Stats - instant or average
         if self.display_mode=="instant":
-            self.lb_ic.setText(f"{lc:.3f} mA"); self.lb_iv.setText(f"{lv:.4f} V"); self.lb_ip.setText(f"{lp:.3f} mW")
+            c_str = f"{lc:.1f} μA" if lc < 1000 else f"{lc/1000:.3f} mA"
+            self.lb_ic.setText(c_str); self.lb_iv.setText(f"{lv:.4f} V"); self.lb_ip.setText(f"{lp:.3f} mW")
         else:
             # Sliding average (last 100 points)
             n=min(100,len(self.cs))
             avg_c=sum(self.cs[-n:])/n; avg_v=sum(self.vs[-n:])/n; avg_p=sum(self.ps[-n:])/n
-            self.lb_ic.setText(f"{avg_c:.3f} mA"); self.lb_iv.setText(f"{avg_v:.4f} V"); self.lb_ip.setText(f"{avg_p:.3f} mW")
+            c_str = f"{avg_c:.1f} μA" if avg_c < 1000 else f"{avg_c/1000:.3f} mA"
+            self.lb_ic.setText(c_str); self.lb_iv.setText(f"{avg_v:.4f} V"); self.lb_ip.setText(f"{avg_p:.3f} mW")
 
         # Global stats
         ac=sum(self.cs)/len(self.cs); av=sum(self.vs)/len(self.vs); ap=sum(self.ps)/len(self.ps)
-        self.lb_ac.setText(f"平均电流: {ac:.1f} mA"); self.lb_av.setText(f"平均电压: {av:.4f} V")
-        self.lb_ap.setText(f"平均功率: {ap:.1f} mW")
-        self.lb_mx.setText(f"最大电流: {self.max_c:.1f} mA"); self.lb_mn.setText(f"最小电流: {self.min_c:.1f} mA")
+        ac_str = f"{ac:.1f} μA" if ac < 1000 else f"{ac/1000:.1f} mA"
+        self.lb_ac.setText(f"平均电流: {ac_str}"); self.lb_av.setText(f"平均电压: {av:.4f} V")
+        self.lb_ap.setText(f"平均功率: {ap:.3f} mW")
+        mx_str = f"{self.max_c:.1f} μA" if self.max_c < 1000 else f"{self.max_c/1000:.1f} mA"
+        mn_str = f"{self.min_c:.1f} μA" if self.min_c < 1000 else f"{self.min_c/1000:.1f} mA"
+        self.lb_mx.setText(f"最大电流: {mx_str}"); self.lb_mn.setText(f"最小电流: {mn_str}")
         self.lb_n.setText(f"采样点数: {len(self.ts)}")
 
         # Time
@@ -1645,6 +2191,30 @@ td.left {{ text-align: left; font-weight: bold; }}
             self.btn_pause.setStyleSheet("")
             self.statusBar().showMessage("自动滚动已恢复")
 
+    def _switch_time_mode(self, idx):
+        self.time_mode = idx
+        is_sys = idx == 1
+        label = "系统时间" if is_sys else "时间 (s)"
+        label_color = "#6c7086" if self.theme_idx != 1 else "#7c7f93"
+        for pw, attr in [(self.pm, 'time_axis_m'), (self.pc, 'time_axis_c'), (self.pv, 'time_axis_v')]:
+            pw.setLabel("bottom", label, color=label_color)
+            old_axis = pw.plotItem.axes['bottom']['item']
+            if is_sys:
+                if not isinstance(old_axis, TimeAxisItem):
+                    new_axis = TimeAxisItem(orientation='bottom')
+                    if self.t0_abs:
+                        new_axis.setStartTime(self.t0_abs)
+                    pw.plotItem.setAxisItems({'bottom': new_axis})
+                    setattr(self, attr, new_axis)
+            else:
+                if isinstance(old_axis, TimeAxisItem):
+                    from pyqtgraph import AxisItem
+                    new_axis = AxisItem(orientation='bottom')
+                    pw.plotItem.setAxisItems({'bottom': new_axis})
+                    setattr(self, attr, None)
+        if self.ts:
+            self._ui()
+
     def _switch_unit(self):
         self.unit=1-self.unit; self._ui()
 
@@ -1665,8 +2235,12 @@ td.left {{ text-align: left; font-weight: bold; }}
         self.rn.setText(f"采样点数: {len(idx)}")
 
     def _apply(self):
-        if not GPIB_OK or gpib_ud<0: QMessageBox.warning(self,"提示","请先连接GPIB设备"); return
-        g_send(f"VOLT {self.sv.value():.3f}"); g_send(f"CURR {self.sc.value()/1000:.3f}")
+        if self.device_mode == "gpib":
+            if not GPIB_OK or gpib_ud<0: QMessageBox.warning(self,"提示","请先连接GPIB设备"); return
+            g_send(f"VOLT {self.sv.value():.3f}"); g_send(f"CURR {self.sc.value()/1000:.3f}")
+        else:
+            if not USB_OK or not _libusb_dev: QMessageBox.warning(self,"提示","请先连接 USB 设备"); return
+            s_send(f"VOLT {self.sv.value():.3f}"); s_send(f"CURR {self.sc.value()/1000:.3f}")
         QMessageBox.information(self,"成功","设置已生效")
 
     def _screenshot(self):
@@ -1700,15 +2274,34 @@ td.left {{ text-align: left; font-weight: bold; }}
     def _run(self):
         c=self.se.toPlainText()
         if not c.strip(): return
-        try: exec(c,{"g_send":g_send,"g_qry":g_qry}); self.le.append(f"[OK] {time.strftime('%H:%M:%S')}")
-        except Exception as e: self.le.append(f"[ERR] {time.strftime('%H:%M:%S')} {e}")
+        try:
+            from lupa import LuaRuntime
+            lua = LuaRuntime(unpack_returned_tuples=True)
+            lua.globals().g_send = g_send
+            lua.globals().g_qry = g_qry
+            lua.globals().s_send = s_send
+            lua.globals().s_qry = s_qry
+            lua.globals().s_scan = s_scan
+            lua.globals().s_open = s_open
+            lua.globals().s_close = s_close
+            lua.globals().print = lambda *a: self.le.append(" ".join(str(x) for x in a))
+            lua.execute(c)
+            self.le.append(f"[OK] {time.strftime('%H:%M:%S')}")
+        except Exception as e:
+            self.le.append(f"[ERR] {time.strftime('%H:%M:%S')} {e}")
+
+    def _send_script(self):
+        c = self.se.toPlainText()
+        if not c.strip(): return
+        s_send(c)
+        self.le.append(f"[发送] {time.strftime('%H:%M:%S')}\n{c}")
 
     def _save(self):
         if not self.ts: QMessageBox.information(self,"提示","无数据"); return
         p,_=QFileDialog.getSaveFileName(self,"保存","","CSV (*.csv)")
         if p:
             with open(p,"w",newline="",encoding="utf-8") as f:
-                w=csv.writer(f); w.writerow(["时间","电压(V)","电流(mA)","功率(mW)"])
+                w=csv.writer(f); w.writerow(["时间","电压(V)","电流(uA)","功率(mW)"])
                 for t,v,c,pp in zip(self.ts,self.vs,self.cs,self.ps): w.writerow([f"{t:.4f}",f"{v:.4f}",f"{c:.4f}",f"{pp:.4f}"])
             QMessageBox.information(self,"成功","已保存")
 
@@ -1723,10 +2316,20 @@ td.left {{ text-align: left; font-weight: bold; }}
             QMessageBox.information(self,"成功","已加载")
         except Exception as e: QMessageBox.critical(self,"错误",str(e))
 
-    def _clear(self):
+    def _clear(self, force=False):
+        """清空所有波形数据"""
+        if self.btn_pause.isChecked() and not force:
+            QMessageBox.warning(self, "提示", "采集已暂停，请先恢复自动滚动再清空数据")
+            return
+        if not force and self.ts:
+            ret = QMessageBox.question(self, "确认清空",
+                "确定要清空所有波形数据吗？\n此操作不可恢复！",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ret != QMessageBox.Yes: return
         self.ts.clear(); self.vs.clear(); self.cs.clear(); self.ps.clear()
         self.e_mwh=0; self.max_c=0; self.min_c=float("inf"); self.save_count=0
         self.cc.clear(); self.cv.clear()
+        self.statusBar().showMessage("数据已清空")
 
     def _float(self):
         if self.windowFlags()&Qt.WindowStaysOnTopHint: self.setWindowFlags(Qt.Window); self.act_float.setText("悬浮窗")
@@ -1746,6 +2349,92 @@ td.left {{ text-align: left; font-weight: bold; }}
         self.pv.setVisible(self.show_voltage)
         self.tvl.setVisible(self.show_voltage)
         self.lvl.setVisible(self.show_voltage)
+        self.tm_v.setVisible(self.show_voltage)
+
+    def _apply_analysis_win_theme(self):
+        """Apply current theme to analysis window and related widgets"""
+        is_dark = self.theme_idx != 1
+        if is_dark:
+            win_bg = "#1e1e2e"
+            btn_bg = "#313244"; btn_fg = "#cdd6f4"; btn_border = "#45475a"
+            btn_hover = "#45475a"
+            menu_bg = "#1e1e2e"; menu_fg = "#cdd6f4"; menu_border = "#313244"; menu_sel = "#313244"
+            fb_bg = "rgba(30,30,46,220)"; fb_btn_bg = "#313244"; fb_btn_fg = "#cdd6f4"; fb_btn_border = "#45475a"
+            fb_btn_hover = "#45475a"; fb_report_bg = "#89b4fa"; fb_report_fg = "#1e1e2e"
+            mini_bg = "#89b4fa"; mini_fg = "#1e1e2e"; mini_hover = "#74a8fa"
+            title_color = "#cdd6f4"; label_color = "#6c7086"
+            tip_text = "#cdd6f4"; tip_fill = "#1e1e2eee"; tip_border = "#585b70"
+            lbl_fill = "#11111bcc"
+            crosshair_color = "#45475a"
+            hint_color = "#6c7086"
+        else:
+            win_bg = "#eff1f5"
+            btn_bg = "#ccd0da"; btn_fg = "#4c4f69"; btn_border = "#bcc0cc"
+            btn_hover = "#bcc0cc"
+            menu_bg = "#eff1f5"; menu_fg = "#4c4f69"; menu_border = "#ccd0da"; menu_sel = "#ccd0da"
+            fb_bg = "rgba(230,233,239,220)"; fb_btn_bg = "#ccd0da"; fb_btn_fg = "#4c4f69"; fb_btn_border = "#bcc0cc"
+            fb_btn_hover = "#bcc0cc"; fb_report_bg = "#1e66f5"; fb_report_fg = "#ffffff"
+            mini_bg = "#1e66f5"; mini_fg = "#ffffff"; mini_hover = "#1758d4"
+            title_color = "#4c4f69"; label_color = "#7c7f93"
+            tip_text = "#4c4f69"; tip_fill = "#eff1f5ee"; tip_border = "#bcc0cc"
+            lbl_fill = "#e6e9efcc"
+            crosshair_color = "#bcc0cc"
+            hint_color = "#7c7f93"
+        
+        if self.region_panel:
+            self.region_panel.set_dark(is_dark)
+        
+        if hasattr(self, 'analysis_win') and self.analysis_win:
+            self.analysis_win.setStyleSheet(f"""
+                QMainWindow {{ background: {win_bg}; }}
+                QWidget {{ background: {win_bg}; }}
+                QPushButton {{
+                    background: {btn_bg}; color: {btn_fg}; border: 1px solid {btn_border};
+                    border-radius: 6px; padding: 8px 16px; font-weight: bold;
+                }}
+                QPushButton:hover {{ background: {btn_hover}; }}
+            """)
+        
+        if hasattr(self, 'analysis_mini_btn') and self.analysis_mini_btn:
+            self.analysis_mini_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {mini_bg}; color: {mini_fg}; border: none;
+                    border-radius: 20px; font-size: 16px; font-weight: bold;
+                }}
+                QPushButton:hover {{ background: {mini_hover}; }}
+            """)
+        
+        for pw in [self.pm, self.pc, self.pv]:
+            menu = pw.plotItem.vb.menu
+            if menu:
+                menu.setStyleSheet(f"QMenu{{background:{menu_bg};color:{menu_fg};border:1px solid {menu_border};}}QMenu::item:selected{{background:{menu_sel};}}")
+
+        time_label = "系统时间" if self.time_mode else "时间 (s)"
+        self.pm.setTitle("电压 / 电流 波形", color=title_color, size="12pt")
+        self.pm.setLabel("left", "电流 (mA)", color="#89b4fa" if is_dark else "#1e66f5")
+        self.pm.setLabel("bottom", time_label, color=label_color)
+        self.pm.plotItem.getAxis('right').setLabel("电压 (V)", color="#f38ba8" if is_dark else "#d20f39")
+        self.pc.setTitle("电流波形", color=title_color, size="12pt")
+        self.pc.setLabel("left", "电流 (mA)", color=label_color)
+        self.pc.setLabel("bottom", time_label, color=label_color)
+        self.pv.setTitle("电压波形", color=title_color, size="12pt")
+        self.pv.setLabel("left", "电压 (V)", color=label_color)
+        self.pv.setLabel("bottom", time_label, color=label_color)
+
+        self.xm.setColor(tip_text); self.xm._border = pg.mkPen(tip_border, width=1); self.xm._fill = pg.mkBrush(tip_fill); self.xm.update()
+        self.xc.setColor(tip_text); self.xc._border = pg.mkPen(tip_border, width=1); self.xc._fill = pg.mkBrush(tip_fill); self.xc.update()
+        self.xvl.setColor(tip_text); self.xvl._border = pg.mkPen(tip_border, width=1); self.xvl._fill = pg.mkBrush(tip_fill); self.xvl.update()
+        self.lmc.setColor("#89b4fa" if is_dark else "#1e66f5"); self.lmc._fill = pg.mkBrush(lbl_fill); self.lmc.update()
+        self.lmv.setColor("#f38ba8" if is_dark else "#d20f39"); self.lmv._fill = pg.mkBrush(lbl_fill); self.lmv.update()
+        self.lc.setColor("#89b4fa" if is_dark else "#1e66f5"); self.lc._fill = pg.mkBrush(lbl_fill); self.lc.update()
+        self.lvl.setColor("#f38ba8" if is_dark else "#d20f39"); self.lvl._fill = pg.mkBrush(lbl_fill); self.lvl.update()
+
+        ch_pen = pg.mkPen(crosshair_color, style=Qt.DashLine, width=1)
+        for line in [self.vm, self.hm, self.vc, self.hc, self.vvl, self.hvl]:
+            line.setPen(ch_pen)
+
+        if hasattr(self, 'analysis_hint') and self.analysis_hint:
+            self.analysis_hint.setStyleSheet(f"color:{hint_color};font-size:12px;padding:8px")
 
     def _toggle_theme(self):
         dark, light = get_themes(self.is_low_res)
@@ -1754,19 +2443,33 @@ td.left {{ text-align: left; font-weight: bold; }}
         self.theme_idx=(self.theme_idx+1)%3
         self.act_theme.setText(names[self.theme_idx])
         QApplication.instance().setStyleSheet(themes[self.theme_idx])
-        # Update plot backgrounds for light mode
+        is_dark = self.theme_idx != 1
+        set_dark_titlebar(self, is_dark)
+        # Update RoundSwitch themes
+        for sw in [self.btn_region, self.chk_auto, self.chk_bold, self.sw_track]:
+            sw.set_dark(is_dark)
         bg="#eff1f5" if self.theme_idx==1 else "#11111b"
         grid_c="#ccd0da" if self.theme_idx==1 else "#45475a"
         self.pm.setBackground(bg); self.pc.setBackground(bg); self.pv.setBackground(bg)
+        self._apply_analysis_win_theme()
 
-    def _update_data_font_size(self, size):
-        self.data_font_size = size
-        fs = f"{size}px"
+    def _update_data_font_size(self, size=None):
+        if size is not None:
+            self.data_font_size = size
+        self.data_font_bold = self.chk_bold.isChecked()
+        fs = f"{self.data_font_size}px"
+        fw = "bold" if self.data_font_bold else "normal"
         import re
         for lbl in [self.lb_ac, self.lb_av, self.lb_ap, self.lb_mx, self.lb_mn, self.lb_en, self.lb_ah, self.lb_tm, self.lb_n]:
             style = lbl.styleSheet()
             style = re.sub(r'font-size:\d+px', f'font-size:{fs}', style)
+            style = re.sub(r'font-weight:\w+', f'font-weight:{fw}', style)
+            if 'font-weight:' not in style:
+                style += f';font-weight:{fw}'
             lbl.setStyleSheet(style)
+
+    def _update_data_font_size_bold(self):
+        self._update_data_font_size()
 
     def _load_settings(self):
         s=QSettings("PG-Power","settings")
@@ -1781,18 +2484,29 @@ td.left {{ text-align: left; font-weight: bold; }}
         self.spin_vmin.setValue(s.value("v_min",0,type=float))
         self.spin_cache.setValue(s.value("cache",50000,type=int))
         self.spin_lw.setValue(s.value("line_width",2,type=float))
-        self.data_font_size=s.value("data_font_size",12,type=int)
+        self.data_font_size=s.value("data_font_size",18,type=int)
+        self.data_font_bold=s.value("data_font_bold",True,type=bool)
         self.spin_font_size.setValue(self.data_font_size)
+        self.chk_bold.setChecked(self.data_font_bold)
         self.cb_coord.setCurrentIndex(s.value("coord",0,type=int))
         self.track_side=s.value("track_side","right")
-        if self.track_side=="left": self.btn_tl.setStyleSheet("background:#a6e3a1;")
-        else: self.btn_tr.setStyleSheet("background:#a6e3a1;")
+        self.sw_track.blockSignals(True)
+        self.sw_track.setChecked(self.track_side=="right")
+        self.sw_track.blockSignals(False)
+        self._ts(self.track_side)
         sp=s.value("screenshot_path","")
         if sp: self.le_screenshot_path.setText(sp)
         self.time_mode=s.value("time_mode",0,type=int)
         self.cb_time_mode.setCurrentIndex(self.time_mode)
         self.sample_interval=s.value("sample_interval",50,type=int)
         self.cb_sample.setCurrentText(str(self.sample_interval))
+        # LuatOS/Serial settings
+        self.device_mode=s.value("device_mode","gpib")
+        mode_idx=0 if self.device_mode=="gpib" else 1
+        self.cb_mode.setCurrentIndex(mode_idx)
+        self._on_device_mode_changed(mode_idx)
+        port=s.value("serial_port","")
+        if port: self.cb_serial_port.setCurrentText(port)
 
     def _save_settings(self):
         s=QSettings("PG-Power","settings")
@@ -1808,17 +2522,29 @@ td.left {{ text-align: left; font-weight: bold; }}
         s.setValue("cache",self.spin_cache.value())
         s.setValue("line_width",self.spin_lw.value())
         s.setValue("data_font_size",self.data_font_size)
+        s.setValue("data_font_bold",self.data_font_bold)
         s.setValue("coord",self.cb_coord.currentIndex())
         s.setValue("track_side",self.track_side)
         s.setValue("screenshot_path",self.le_screenshot_path.text())
         s.setValue("time_mode",self.time_mode)
         s.setValue("sample_interval",self.sample_interval)
+        s.setValue("device_mode",self.device_mode)
+        s.setValue("serial_port",self.cb_serial_port.currentText())
 
     def closeEvent(self, e):
-        self.collecting=False; g_close(); self._save_settings(); e.accept()
+        self.collecting=False
+        if self.device_mode == "gpib": g_close()
+        else: s_close()
+        self._save_settings(); e.accept()
 
 if __name__=="__main__":
+    import ctypes
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PG-Power")
+    except Exception:
+        pass
     app=QApplication(sys.argv)
+    app.setStyle("Fusion")
     # Detect screen resolution for theme
     screen = app.primaryScreen()
     is_low_res = screen and (screen.availableGeometry().width() < 1280 or screen.availableGeometry().height() < 800)

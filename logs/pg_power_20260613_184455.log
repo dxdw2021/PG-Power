@@ -1,0 +1,70 @@
+2026-06-13 18:44:55,452 [INFO] 日志: D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\logs\pg_power_20260613_184455.log
+2026-06-13 18:44:55,717 [WARNING] GPIB: Could not find module 'D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\ni4882.dll' (or one of its dependencies). Try using the full path with constructor syntax.
+2026-06-13 18:45:02,788 [INFO] USB设备已连接: VID=1209 PID=7301 EP_IN=0x81 EP_OUT=0x02
+2026-06-13 18:45:11,682 [INFO] 采集启动: mode=luatos, USB_OK=True, dev=DEVICE ID 1209:7301 on Bus 001 Address 017 =================
+ bLength                :   0x12 (18 bytes)
+ bDescriptorType        :    0x1 Device
+ bcdUSB                 :  0x210 USB 2.1
+ bDeviceClass           :    0x0 Specified at interface
+ bDeviceSubClass        :    0x0
+ bDeviceProtocol        :    0x0
+ bMaxPacketSize0        :   0x40 (64 bytes)
+ idVendor               : 0x1209
+ idProduct              : 0x7301
+ bcdDevice              :  0x100 Device 1.0
+ iManufacturer          :    0x1 上海合宙通信有限公司
+ iProduct               :    0x4 IotPower-cc
+ iSerialNumber          :    0x3 CC-1A604F530
+ bNumConfigurations     :    0x1
+  CONFIGURATION 1: 200 mA ==================================
+   bLength              :    0x9 (9 bytes)
+   bDescriptorType      :    0x2 Configuration
+   wTotalLength         :   0x20 (32 bytes)
+   bNumInterfaces       :    0x1
+   bConfigurationValue  :    0x1
+   iConfiguration       :    0x0 
+   bmAttributes         :   0x80 Bus Powered
+   bMaxPower            :   0x64 (200 mA)
+    INTERFACE 0: Vendor Specific ===========================
+     bLength            :    0x9 (9 bytes)
+     bDescriptorType    :    0x4 Interface
+     bInterfaceNumber   :    0x0
+     bAlternateSetting  :    0x0
+     bNumEndpoints      :    0x2
+     bInterfaceClass    :   0xff Vendor Specific
+     bInterfaceSubClass :   0xff
+     bInterfaceProtocol :    0x0
+     iInterface         :    0x4 IotPower-cc
+      ENDPOINT 0x81: Bulk IN ===============================
+       bLength          :    0x7 (7 bytes)
+       bDescriptorType  :    0x5 Endpoint
+       bEndpointAddress :   0x81 IN
+       bmAttributes     :    0x2 Bulk
+       wMaxPacketSize   :   0x40 (64 bytes)
+       bInterval        :    0x1
+      ENDPOINT 0x2: Bulk OUT ===============================
+       bLength          :    0x7 (7 bytes)
+       bDescriptorType  :    0x5 Endpoint
+       bEndpointAddress :    0x2 OUT
+       bmAttributes     :    0x2 Bulk
+       wMaxPacketSize   :   0x40 (64 bytes)
+       bInterval        :    0x1
+2026-06-13 18:45:11,683 [INFO] _loop线程已启动
+2026-06-13 18:45:11,683 [INFO] 采集已启动
+2026-06-13 18:45:11,683 [INFO] #1 v_raw=17013 c_raw=10223 → V=4.207 C=1032.6uA
+2026-06-13 18:45:11,754 [INFO] #2 v_raw=16989 c_raw=688 → V=4.201 C=69.5uA
+2026-06-13 18:45:11,825 [INFO] #3 v_raw=17024 c_raw=688 → V=4.210 C=69.5uA
+2026-06-13 18:45:15,065 [DEBUG] OUTLIER: c=10266 hist_mid=688
+2026-06-13 18:45:18,167 [DEBUG] OUTLIER: c=10305 hist_mid=688
+2026-06-13 18:45:21,269 [DEBUG] OUTLIER: c=10343 hist_mid=688
+2026-06-13 18:45:24,370 [DEBUG] OUTLIER: c=10382 hist_mid=688
+2026-06-13 18:45:26,033 [INFO] #200 v_raw=16985 c_raw=688 → V=4.200 C=69.5uA
+2026-06-13 18:45:27,472 [DEBUG] OUTLIER: c=10421 hist_mid=688
+2026-06-13 18:45:30,575 [DEBUG] OUTLIER: c=10460 hist_mid=688
+2026-06-13 18:45:33,676 [DEBUG] OUTLIER: c=10499 hist_mid=688
+2026-06-13 18:45:36,779 [DEBUG] OUTLIER: c=10537 hist_mid=688
+2026-06-13 18:45:39,881 [DEBUG] OUTLIER: c=10576 hist_mid=685
+2026-06-13 18:45:40,463 [INFO] #400 v_raw=49201 c_raw=676 → V=12.166 C=68.3uA
+2026-06-13 18:45:42,985 [DEBUG] OUTLIER: c=10615 hist_mid=681
+2026-06-13 18:45:48,392 [INFO] 采集已停止
+2026-06-13 18:50:59,464 [INFO] USB设备已断开
