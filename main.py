@@ -201,12 +201,19 @@ _debug_cnt = 0
 _debug_v_cnt = 0
 _v_filtered = 0
 _sample_cnt = 0
+_consec_v_filtered = 0   # 连续电压过滤计数（突发检测）
+_last_v_filtered_ts = 0  # 上次过滤时的 sample_cnt
 _c_raw_history = []
 _v_raw_history = []
+_prev_hist_v_mid = 0     # 上次历史中位数（基线漂移检测）
+_packet_dump_cnt = 0     # 已dump的异常包数量
+
 
 def s_readline():
     """Read one 64-byte USB packet, return filtered (v_raw, c_raw)"""
-    global _debug_cnt, _debug_v_cnt, _v_filtered, _sample_cnt, _c_raw_history, _v_raw_history
+    global _debug_cnt, _debug_v_cnt, _v_filtered, _sample_cnt
+    global _consec_v_filtered, _last_v_filtered_ts
+    global _c_raw_history, _v_raw_history, _prev_hist_v_mid, _packet_dump_cnt
     if not _libusb_dev or _libusb_ep_in is None:
         return None
     try:
@@ -251,47 +258,122 @@ def s_readline():
                 _debug_cnt += 1
             return None
 
-    # Filter voltage outliers (v_raw jumps to ~34386/49200 while normal is ~16400-17024)
+    # ===== 电压异常过滤 (ADC跳变: 正常~16400-17024, 异常~34386/8.5V 或 ~49200/12.2V) =====
     if len(_v_raw_history) >= 5:
-        hist_v_mid = sorted(_v_raw_history)[len(_v_raw_history)//2]
+        hist_v_all = sorted(_v_raw_history)
+        hist_v_mid = hist_v_all[len(hist_v_all) // 2]
         deviation = abs(v_med - hist_v_mid) / hist_v_mid if hist_v_mid > 0 else 0
-        if hist_v_mid > 100 and deviation > 0.3:
-            _v_filtered += 1
-            logger.info(
-                f"[V-FILTER] #{_v_filtered} v_raw={v_med} hist_mid={hist_v_mid:.0f} "
-                f"偏差={deviation*100:.1f}% v_换算={v_med/4044.0:.2f}V c_raw={c_med} 已过滤"
-            )
-            if _debug_v_cnt < 10:
-                hist_v_all = sorted(_v_raw_history)
-                logger.debug(
-                    f"[V-FILTER-DBG] v_hist(最近{len(hist_v_all)}) "
-                    f"min={hist_v_all[0]} max={hist_v_all[-1]} mid={hist_v_mid:.0f}"
+        dev_threshold = 0.3  # 30% 偏差阈值
+
+        # ---- 基线漂移检测 (历史中位数是否已偏离正常范围) ----
+        if _prev_hist_v_mid > 0:
+            hist_shift = abs(hist_v_mid - _prev_hist_v_mid) / _prev_hist_v_mid
+            if hist_shift > 0.15 and _sample_cnt % 100 == 0:
+                logger.warning(
+                    f"[V-BASELINE] ⚠ 历史基线漂移: {_prev_hist_v_mid:.0f} → {hist_v_mid:.0f} "
+                    f"(偏移{hist_shift*100:.1f}%) — 可能是供电电压变化或缓冲区被异常数据污染"
                 )
+
+        # ---- 异常判定 ----
+        is_anomaly = (hist_v_mid > 100 and deviation > dev_threshold)
+
+        if is_anomaly:
+            _v_filtered += 1
+            _consec_v_filtered += 1
+            _last_v_filtered_ts = _sample_cnt
+
+            # ---- 原始包字节 dump (前10次异常触发) ----
+            pkt_hex = ""
+            if _packet_dump_cnt < 10:
+                pkt_hex = raw.hex(" ")
+                _packet_dump_cnt += 1
+
+            # ---- 当前包的原始采样统计 ----
+            raw_v_min, raw_v_max = min(vs), max(vs)
+            raw_c_min, raw_c_max = min(cs), max(cs)
+            # 历史中位数对应的电压换算值
+            hist_v_volt = hist_v_mid / 4044.0
+            cur_v_volt = v_med / 4044.0
+            # 当前滤波器状态汇总
+            c_mid = cs[mid]
+            total_filt = _v_filtered + (_debug_cnt - 0)  # approximate
+
+            logger.info(
+                f"[V-FILTER] #{_v_filtered} │ "
+                f"v_med={v_med}(→{cur_v_volt:.2f}V) "
+                f"vs 历史中位数={hist_v_mid:.0f}(→{hist_v_volt:.2f}V) "
+                f"偏离={deviation*100:.1f}% (阈值{dev_threshold*100:.0f}%)"
+            )
+            logger.info(
+                f"[V-FILTER] #{_v_filtered} │ "
+                f"当前包raw: v范围[{raw_v_min},{raw_v_max}] c范围[{raw_c_min},{raw_c_max}] "
+                f"c_med={c_mid}(→{c_mid/9.9:.1f}μA) │ "
+                f"连续过滤={_consec_v_filtered}次 │ 历史v范围[{hist_v_all[0]},{hist_v_all[-1]}]"
+            )
+
+            # ---- 原始包字节 dump (前10次) ----
+            if pkt_hex:
+                logger.debug(
+                    f"[V-FILTER-DUMP] #{_v_filtered} 原始包(64B hex): {pkt_hex}"
+                )
+
+            # ---- 历史样本详情 (前10次) ----
+            if _debug_v_cnt < 10:
                 _debug_v_cnt += 1
+                hist_n = min(10, len(hist_v_all))
+                hist_recent = hist_v_all[-hist_n:]
+                logger.debug(
+                    f"[V-FILTER-HIST] #{_v_filtered} "
+                    f"历史v_raw最近{hist_n}个: {hist_recent}"
+                )
+
+            _prev_hist_v_mid = hist_v_mid
             return None
-    # 每200次有效采样输出一次电压过滤器状态
+
+        else:
+            # ---- 突发结束检测 ----
+            if _consec_v_filtered >= 3:
+                logger.info(
+                    f"[V-FILTER-END] 电压异常突发结束，共连续过滤 {_consec_v_filtered} 个点，"
+                    f"当前v_med={v_med}(→{v_med/4044.0:.2f}V) 恢复正常"
+                )
+            _consec_v_filtered = 0
+
+        _prev_hist_v_mid = hist_v_mid
+
+    # ===== 每200次有效采样输出电压过滤器状态 =====
     if _sample_cnt > 0 and _sample_cnt % 200 == 0:
         if len(_v_raw_history) >= 5:
             hv = sorted(_v_raw_history)
-            rate = _v_filtered / _sample_cnt * 100
+            rate = _v_filtered / _sample_cnt * 100 if _sample_cnt > 0 else 0
+            c_filt_approx = _debug_cnt  # 电流过滤次数
             logger.debug(
-                f"[V-FILTER-STAT] sample_cnt={_sample_cnt} 累计过滤={_v_filtered} "
-                f"过滤率={rate:.1f}% v_min={hv[0]} v_mid={hv[len(hv)//2]} v_max={hv[-1]}"
+                f"[V-FILTER-STAT] sample={_sample_cnt} "
+                f"v过滤={_v_filtered}({rate:.1f}%) c过滤≈{c_filt_approx} "
+                f"v范围[{hv[0]},{hv[len(hv)//2]},{hv[-1]}]"
             )
             # 过滤率 > 20% 时自动告警，输出诊断信息
             if rate > 20:
                 logger.warning(
-                    f"[V-FILTER-ALARM] ⚠️ 电压过滤率异常高 {rate:.1f}%！"
+                    f"[V-FILTER-ALARM] ⚠ 电压过滤率异常高 {rate:.1f}%！"
                     f" 近200次采样中 {_v_filtered}/{_sample_cnt} 被过滤"
                 )
                 logger.warning(
-                    f"[V-FILTER-ALARM] 当前基线范围: v_min={hv[0]} v_mid={hv[len(hv)//2]} v_max={hv[-1]}"
+                    f"[V-FILTER-ALARM] 当前基线: v_min={hv[0]} v_mid={hv[len(hv)//2]} v_max={hv[-1]}"
+                )
+                # 历史中位数换算电压
+                hv_mid = hv[len(hv)//2]
+                hv_volt = hv_mid / 4044.0
+                normal_range_hint = "正常" if 15000 < hv_mid < 18000 else "异常→需重启"
+                logger.warning(
+                    f"[V-FILTER-ALARM] 历史基线v_mid={hv_mid}→{hv_volt:.2f}V ({normal_range_hint})"
                 )
                 logger.warning(
                     f"[V-FILTER-ALARM] 排查建议:"
-                    f" 1)若v_baseline(~{hv[len(hv)//2]})正常但频繁过滤 → USB数据异常"
-                    f" 2)若v_baseline已偏大(>30000) → 历史缓冲区被污染，需重启采集"
-                    f" 3)若v_min/v_max跨度大 → 设备电压剧烈波动，检查供电"
+                    f" 1)若v_baseline正常但频繁过滤 → USB数据异常或设备负载切换干扰"
+                    f" 2)若v_baseline已偏大(>30000) → 历史缓冲区被污染，需停止采集并重启"
+                    f" 3)若v_min/v_max跨度大 → 设备电压剧烈波动，检查供电稳定性"
+                    f" 4)查看上方[V-FILTER]日志确认连续过滤次数(突发/零星)"
                 )
 
     _c_raw_history.append(c_med)
