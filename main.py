@@ -198,12 +198,15 @@ def s_qry(c):
         return None
 
 _debug_cnt = 0
+_debug_v_cnt = 0
+_v_filtered = 0
+_sample_cnt = 0
 _c_raw_history = []
 _v_raw_history = []
 
 def s_readline():
     """Read one 64-byte USB packet, return filtered (v_raw, c_raw)"""
-    global _debug_cnt, _c_raw_history, _v_raw_history
+    global _debug_cnt, _debug_v_cnt, _v_filtered, _sample_cnt, _c_raw_history, _v_raw_history
     if not _libusb_dev or _libusb_ep_in is None:
         return None
     try:
@@ -251,11 +254,29 @@ def s_readline():
     # Filter voltage outliers (v_raw jumps to ~34386/49200 while normal is ~16400-17024)
     if len(_v_raw_history) >= 5:
         hist_v_mid = sorted(_v_raw_history)[len(_v_raw_history)//2]
-        if hist_v_mid > 100 and abs(v_med - hist_v_mid) > hist_v_mid * 0.3:
-            if _debug_cnt < 10:
-                logger.debug(f"OUTLIER V: v={v_med} hist_v_mid={hist_v_mid:.0f}")
-                _debug_cnt += 1
+        deviation = abs(v_med - hist_v_mid) / hist_v_mid if hist_v_mid > 0 else 0
+        if hist_v_mid > 100 and deviation > 0.3:
+            _v_filtered += 1
+            logger.info(
+                f"[V-FILTER] #{_v_filtered} v_raw={v_med} hist_mid={hist_v_mid:.0f} "
+                f"偏差={deviation*100:.1f}% v_换算={v_med/4044.0:.2f}V c_raw={c_med} 已过滤"
+            )
+            if _debug_v_cnt < 10:
+                hist_v_all = sorted(_v_raw_history)
+                logger.debug(
+                    f"[V-FILTER-DBG] v_hist(最近{len(hist_v_all)}) "
+                    f"min={hist_v_all[0]} max={hist_v_all[-1]} mid={hist_v_mid:.0f}"
+                )
+                _debug_v_cnt += 1
             return None
+    # 每200次有效采样输出一次电压过滤器状态
+    if _sample_cnt > 0 and _sample_cnt % 200 == 0:
+        if len(_v_raw_history) >= 5:
+            hv = sorted(_v_raw_history)
+            logger.debug(
+                f"[V-FILTER-STAT] sample_cnt={_sample_cnt} 累计过滤={_v_filtered} "
+                f"v_min={hv[0]} v_mid={hv[len(hv)//2]} v_max={hv[-1]}"
+            )
 
     _c_raw_history.append(c_med)
     if len(_c_raw_history) > 50:
@@ -265,6 +286,7 @@ def s_readline():
     if len(_v_raw_history) > 50:
         _v_raw_history.pop(0)
 
+    _sample_cnt += 1
     return (v_med, c_med)
 
 # ===== Theme =====
