@@ -199,10 +199,11 @@ def s_qry(c):
 
 _debug_cnt = 0
 _c_raw_history = []
+_v_raw_history = []
 
 def s_readline():
     """Read one 64-byte USB packet, return filtered (v_raw, c_raw)"""
-    global _debug_cnt, _c_raw_history
+    global _debug_cnt, _c_raw_history, _v_raw_history
     if not _libusb_dev or _libusb_ep_in is None:
         return None
     try:
@@ -247,9 +248,22 @@ def s_readline():
                 _debug_cnt += 1
             return None
 
+    # Filter voltage outliers (v_raw jumps to ~34386/49200 while normal is ~16400-17024)
+    if len(_v_raw_history) >= 5:
+        hist_v_mid = sorted(_v_raw_history)[len(_v_raw_history)//2]
+        if hist_v_mid > 100 and abs(v_med - hist_v_mid) > hist_v_mid * 0.3:
+            if _debug_cnt < 10:
+                logger.debug(f"OUTLIER V: v={v_med} hist_v_mid={hist_v_mid:.0f}")
+                _debug_cnt += 1
+            return None
+
     _c_raw_history.append(c_med)
     if len(_c_raw_history) > 50:
         _c_raw_history.pop(0)
+
+    _v_raw_history.append(v_med)
+    if len(_v_raw_history) > 50:
+        _v_raw_history.pop(0)
 
     return (v_med, c_med)
 
