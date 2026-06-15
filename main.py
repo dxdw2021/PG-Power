@@ -61,6 +61,7 @@ def get_dll():
     return None
 
 GPIB_OK = False; ni4882 = None; gpib_ud = -1; lock = threading.Lock()
+_gpib_current_offset = 0.0  # mA, GPIB电流零位校准偏移量
 dll = get_dll()
 if dll:
     try:
@@ -207,13 +208,22 @@ _c_raw_history = []
 _v_raw_history = []
 _prev_hist_v_mid = 0     # 上次历史中位数（基线漂移检测）
 _packet_dump_cnt = 0     # 已dump的异常包数量
+_adc_range = 1           # 当前ADC量程 (1/2/3)
+
+
+def _detect_range(v):
+    """检测v_raw所处的ADC量程"""
+    if 15000 < v < 18000: return 1
+    if 33000 < v < 36000: return 2
+    if 48000 < v < 50000: return 3
+    return 0
 
 
 def s_readline():
     """Read one 64-byte USB packet, return filtered (v_raw, c_raw)"""
     global _debug_cnt, _debug_v_cnt, _v_filtered, _sample_cnt
     global _consec_v_filtered, _last_v_filtered_ts
-    global _c_raw_history, _v_raw_history, _prev_hist_v_mid, _packet_dump_cnt
+    global _c_raw_history, _v_raw_history, _prev_hist_v_mid, _packet_dump_cnt, _adc_range
     if not _libusb_dev or _libusb_ep_in is None:
         return None
     try:
@@ -249,29 +259,63 @@ def s_readline():
     v_med = vs[mid]
     c_med = cs[mid]
 
-    # Filter sync packet outliers (c_raw jumps to 7000+ while normal is ~688)
+    # ===== ADC量程检测与归一化 =====
+    # 将不同量程下的raw值归一化到量程1，使后续换算系数(v/4044, c/9.9)始终正确
+    cur_range = _detect_range(v_med)
+    if cur_range > 1:
+        v_med = v_med // cur_range
+        c_med = c_med // cur_range
+        if _adc_range != cur_range:
+            logger.info(
+                f"[ADC-RANGE] 量程 {_adc_range}→{cur_range}，raw已归一化到量程1"
+            )
+            _adc_range = cur_range
+    elif cur_range == 1:
+        _adc_range = 1
+
+    # ===== 负载状态切换检测: 电流突变时重置电压+电流历史基线 =====
+    # ⚡ 必须放在 OUTLIER 过滤之前，否则负载接入电流会被 OUTLIER 误拦截
+    if len(_c_raw_history) >= 5 and len(_v_raw_history) >= 5:
+        c_hist_mid = sorted(_c_raw_history)[len(_c_raw_history) // 2]
+        if c_hist_mid > 100 and abs(c_med - c_hist_mid) > c_hist_mid * 2.5:
+            # 电流变化 > 2.5× → 负载切换，重置所有历史基线
+            _v_raw_history.clear()
+            _c_raw_history.clear()
+            _prev_hist_v_mid = 0
+            _consec_v_filtered = 0
+            logger.info(
+                f"[BASELINE-RESET] 检测到负载切换，重置电压+电流基线 "
+                f"c_med={c_med}(→{c_med/9.9:.1f}μA) "
+                f"历史c_mid={c_hist_mid:.0f}(→{c_hist_mid/9.9:.1f}μA) "
+                f"电流变化={abs(c_med-c_hist_mid)/c_hist_mid*100:.0f}%"
+            )
+            # 重置后跳过本次过滤，直接返回数据
+            _sample_cnt += 1
+            return (v_med, c_med)
+
+    # 放宽: 仅日志记录大跳变，不丢弃数据（原始客户端即如此）
     if len(_c_raw_history) >= 5:
         hist_mid = sorted(_c_raw_history)[len(_c_raw_history)//2]
-        if hist_mid > 100 and abs(c_med - hist_mid) > hist_mid * 5:
+        if hist_mid > 100 and abs(c_med - hist_mid) > hist_mid * 8:
             if _debug_cnt < 10:
-                logger.debug(f"OUTLIER: c={c_med} hist_mid={hist_mid:.0f}")
+                logger.debug(f"OUTLIER(LOG): c={c_med} hist_mid={hist_mid:.0f} — 记录但不过滤")
                 _debug_cnt += 1
-            return None
+            # 不再 return None — 允许数据通过
 
-    # ===== 电压异常过滤 (ADC跳变: 正常~16400-17024, 异常~34386/8.5V 或 ~49200/12.2V) =====
+    # ===== 电压异常过滤 =====
     if len(_v_raw_history) >= 5:
         hist_v_all = sorted(_v_raw_history)
         hist_v_mid = hist_v_all[len(hist_v_all) // 2]
         deviation = abs(v_med - hist_v_mid) / hist_v_mid if hist_v_mid > 0 else 0
-        dev_threshold = 0.3  # 30% 偏差阈值
+        dev_threshold = 0.45  # 45% 偏差阈值（raw已归一化，不应有大跳变）
 
-        # ---- 基线漂移检测 (历史中位数是否已偏离正常范围) ----
+        # ---- 基线漂移检测 ----
         if _prev_hist_v_mid > 0:
             hist_shift = abs(hist_v_mid - _prev_hist_v_mid) / _prev_hist_v_mid
             if hist_shift > 0.15 and _sample_cnt % 100 == 0:
                 logger.warning(
                     f"[V-BASELINE] ⚠ 历史基线漂移: {_prev_hist_v_mid:.0f} → {hist_v_mid:.0f} "
-                    f"(偏移{hist_shift*100:.1f}%) — 可能是供电电压变化或缓冲区被异常数据污染"
+                    f"(偏移{hist_shift*100:.1f}%)"
                 )
 
         # ---- 异常判定 ----
@@ -291,12 +335,9 @@ def s_readline():
             # ---- 当前包的原始采样统计 ----
             raw_v_min, raw_v_max = min(vs), max(vs)
             raw_c_min, raw_c_max = min(cs), max(cs)
-            # 历史中位数对应的电压换算值
             hist_v_volt = hist_v_mid / 4044.0
             cur_v_volt = v_med / 4044.0
-            # 当前滤波器状态汇总
             c_mid = cs[mid]
-            total_filt = _v_filtered + (_debug_cnt - 0)  # approximate
 
             logger.info(
                 f"[V-FILTER] #{_v_filtered} │ "
@@ -311,23 +352,25 @@ def s_readline():
                 f"连续过滤={_consec_v_filtered}次 │ 历史v范围[{hist_v_all[0]},{hist_v_all[-1]}]"
             )
 
-            # ---- 原始包字节 dump (前10次) ----
             if pkt_hex:
-                logger.debug(
-                    f"[V-FILTER-DUMP] #{_v_filtered} 原始包(64B hex): {pkt_hex}"
-                )
+                logger.debug(f"[V-FILTER-DUMP] #{_v_filtered} 原始包(64B hex): {pkt_hex}")
 
-            # ---- 历史样本详情 (前10次) ----
             if _debug_v_cnt < 10:
                 _debug_v_cnt += 1
                 hist_n = min(10, len(hist_v_all))
                 hist_recent = hist_v_all[-hist_n:]
-                logger.debug(
-                    f"[V-FILTER-HIST] #{_v_filtered} "
-                    f"历史v_raw最近{hist_n}个: {hist_recent}"
-                )
+                logger.debug(f"[V-FILTER-HIST] #{_v_filtered} 历史v_raw最近{hist_n}个: {hist_recent}")
 
             _prev_hist_v_mid = hist_v_mid
+
+            # ---- 连续过滤超过 100 次时自动重置基线（防止永久死锁） ----
+            if _consec_v_filtered >= 100:
+                logger.warning(
+                    f"[V-FILTER-AUTO-RESET] 连续过滤 {_consec_v_filtered} 次，自动重置电压基线"
+                )
+                _v_raw_history.clear()
+                _prev_hist_v_mid = 0
+
             return None
 
         else:
@@ -358,22 +401,19 @@ def s_readline():
                     f"[V-FILTER-ALARM] ⚠ 电压过滤率异常高 {rate:.1f}%！"
                     f" 近200次采样中 {_v_filtered}/{_sample_cnt} 被过滤"
                 )
-                logger.warning(
-                    f"[V-FILTER-ALARM] 当前基线: v_min={hv[0]} v_mid={hv[len(hv)//2]} v_max={hv[-1]}"
-                )
-                # 历史中位数换算电压
                 hv_mid = hv[len(hv)//2]
-                hv_volt = hv_mid / 4044.0
-                normal_range_hint = "正常" if 15000 < hv_mid < 18000 else "异常→需重启"
+                r = _detect_range(hv_mid)
+                range_hint = {1: "量程1(4V)", 2: "量程2(8V)", 3: "量程3(12V)", 0: "未知"}.get(r, "未知")
+                hv_volt = hv_mid / 4044.0  # 已归一化到量程1
                 logger.warning(
-                    f"[V-FILTER-ALARM] 历史基线v_mid={hv_mid}→{hv_volt:.2f}V ({normal_range_hint})"
+                    f"[V-FILTER-ALARM] 当前基线: v_mid={hv_mid}→{hv_volt:.2f}V ({range_hint}) "
+                    f"v_min={hv[0]} v_max={hv[-1]}"
                 )
                 logger.warning(
                     f"[V-FILTER-ALARM] 排查建议:"
-                    f" 1)若v_baseline正常但频繁过滤 → USB数据异常或设备负载切换干扰"
-                    f" 2)若v_baseline已偏大(>30000) → 历史缓冲区被污染，需停止采集并重启"
-                    f" 3)若v_min/v_max跨度大 → 设备电压剧烈波动，检查供电稳定性"
-                    f" 4)查看上方[V-FILTER]日志确认连续过滤次数(突发/零星)"
+                    f" 1)超过45%偏差 → 可能是USB数据异常"
+                    f" 2)连续过滤>100次 → 自动重置基线"
+                    f" 3)检查量程归一化是否正常工作"
                 )
 
     _c_raw_history.append(c_med)
@@ -725,6 +765,10 @@ class TimeAxisItem(pg.AxisItem):
         return strings
 
 class Main(QMainWindow):
+    def _curr_axis_label(self):
+        """Y-axis label: always mA"""
+        return "电流 (mA)"
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"PG-Power | GPIB电源测试工具 v{APP_VERSION}")
@@ -762,11 +806,22 @@ class Main(QMainWindow):
         self.t0_abs=None
         self.setMouseTracking(True)
 
-        # Test phases
-        self.phases=[{"n":"开机","d":310,"v":5.0,"c":0.300,"s":0.020},
-            {"n":"待机","d":445,"v":5.0,"c":0.075,"s":0.005},{"n":"通话","d":150,"v":5.0,"c":0.280,"s":0.015},
-            {"n":"待机","d":443,"v":5.0,"c":0.075,"s":0.005},{"n":"通话","d":150,"v":5.0,"c":0.280,"s":0.015},
-            {"n":"待机","d":445,"v":5.0,"c":0.075,"s":0.005},{"n":"重启","d":310,"v":5.0,"c":0.300,"s":0.020}]
+        # Test phases — 负载升降测试波形 (mA单位, *1000→µA)
+        self.phases=[
+            {"n":"待机","d":40,"v":5.0,"c":0.3,"s":0.010},
+            {"n":"轻载10mA","d":40,"v":5.0,"c":10,"s":0.050},
+            {"n":"中载50mA","d":40,"v":5.0,"c":50,"s":0.10},
+            {"n":"负载100mA","d":40,"v":5.0,"c":100,"s":0.20},
+            {"n":"重载200mA","d":40,"v":5.0,"c":200,"s":0.50},
+            {"n":"高载500mA","d":40,"v":5.0,"c":500,"s":1.0},
+            {"n":"最大1000mA","d":40,"v":5.0,"c":1000,"s":2.0},
+            {"n":"下降500mA","d":40,"v":5.0,"c":500,"s":1.0},
+            {"n":"下降200mA","d":40,"v":5.0,"c":200,"s":0.50},
+            {"n":"下降100mA","d":40,"v":5.0,"c":100,"s":0.20},
+            {"n":"下降50mA","d":40,"v":5.0,"c":50,"s":0.10},
+            {"n":"下降10mA","d":40,"v":5.0,"c":10,"s":0.050},
+            {"n":"待机","d":60,"v":5.0,"c":0.3,"s":0.010},
+        ]
         self.phi=0; self.pe=0
 
         # Cache settings
@@ -878,6 +933,21 @@ class Main(QMainWindow):
         fs_small = "10px" if self.is_low_res else "11px"
 
         # Display mode selector
+        # ---- 快速连接（左侧菜单顶部） ----
+        g_quick = QGroupBox("快速连接")
+        gq_lay = QHBoxLayout(g_quick); gq_lay.setSpacing(4)
+        gq_lay.setContentsMargins(6, 8, 6, 8)
+        self.cb_quick_type = QComboBox()
+        self.cb_quick_type.addItems(["GPIB", "USB (IotPower-cc)"])
+        self.cb_quick_type.setMinimumHeight(24)
+        gq_lay.addWidget(self.cb_quick_type)
+        self.btn_quick_conn = QPushButton("连接")
+        self.btn_quick_conn.setObjectName("conn")
+        self.btn_quick_conn.setMinimumHeight(24)
+        self.btn_quick_conn.clicked.connect(self._quick_connect)
+        gq_lay.addWidget(self.btn_quick_conn)
+        ll.addWidget(g_quick)
+
         g0=QGroupBox("显示模式"); gl0=QVBoxLayout(g0)
         self.cb_disp=QComboBox(); self.cb_disp.addItems(["瞬时值","滑动平均值"])
         self.cb_disp.currentIndexChanged.connect(lambda i: setattr(self,'display_mode',['instant','average'][i]))
@@ -947,7 +1017,8 @@ class Main(QMainWindow):
             self.pm = pg.PlotWidget()
         self.pm.setMouseTracking(True)
         self.pm.setBackground("#11111b"); self.pm.showGrid(x=True,y=True,alpha=0.1)
-        self.pm.setLabel("left","电流 (mA)",color="#89b4fa"); self.pm.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
+        self.pm.setLabel("left", self._curr_axis_label(), color="#89b4fa"); self.pm.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
+        self.pm.getAxis('left').autoSIPrefix = False
         self.pm.setTitle("电压 / 电流 波形",color="#cdd6f4",size="12pt")
         self._cn_menu(self.pm)
         # Right axis for voltage
@@ -999,11 +1070,13 @@ class Main(QMainWindow):
             self.pc = pg.PlotWidget()
         self.pc.setMouseTracking(True)
         self.pc.setBackground("#11111b"); self.pc.showGrid(x=True,y=True,alpha=0.1)
-        self.pc.setLabel("left","电流 (mA)",color="#6c7086"); self.pc.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
+        self.pc.setLabel("left", self._curr_axis_label(), color="#6c7086"); self.pc.setLabel("bottom","系统时间" if self.time_mode else "时间 (s)",color="#6c7086")
+        self.pc.getAxis('left').autoSIPrefix = False
         self.pc.setTitle("电流波形",color="#cdd6f4",size="12pt")
         self._cn_menu(self.pc)
         # Set ViewBox limits to prevent negative values
         self.pc.plotItem.vb.setLimits(xMin=0, yMin=0)
+        self.pc.plotItem.vb.enableAutoRange(enable=False)
         self.cc=self.pc.plot(pen=pg.mkPen("#89b4fa",width=2),fillLevel=0,brush=pg.mkBrush(137,180,250,40))
         self.vc=pg.InfiniteLine(90,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.hc=pg.InfiniteLine(0,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
@@ -1033,6 +1106,7 @@ class Main(QMainWindow):
         self._cn_menu(self.pv)
         # Set ViewBox limits to prevent negative values
         self.pv.plotItem.vb.setLimits(xMin=0, yMin=0)
+        self.pv.plotItem.vb.enableAutoRange(enable=False)
         self.cv=self.pv.plot(pen=pg.mkPen("#f38ba8",width=2))
         self.vvl=pg.InfiniteLine(90,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.hvl=pg.InfiniteLine(0,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
@@ -1076,7 +1150,10 @@ class Main(QMainWindow):
         sp.addWidget(left_scroll); sp.addWidget(mid); lay.addWidget(sp)
 
     def _sync_vb(self):
-        self.pm_vb2.setGeometry(self.pm.plotItem.vb.sceneBoundingRect())
+        try:
+            self.pm_vb2.setGeometry(self.pm.plotItem.vb.sceneBoundingRect())
+        except Exception:
+            pass
 
     def _format_tooltip_time(self, rel_sec):
         if self.time_mode == 1 and self.t0_abs:
@@ -1093,7 +1170,7 @@ class Main(QMainWindow):
                 i = max(0, min(int(mp.x()), len(self.ts) - 1))
                 v, c, p = self.vs[i], self.cs[i], self.ps[i]
                 t_str = self._format_tooltip_time(mp.x())
-                c_str = f"{c:.0f}μA" if c < 1000 else f"{c/1000:.1f}mA"
+                c_str = f"{c/1000:.3f} mA"
                 self.xm.setText(f" {t_str}  {v:.3f}V  {c_str}  {p:.3f}mW ")
                 self.xm.setPos(mp); self.xm.show()
         else:
@@ -1107,7 +1184,7 @@ class Main(QMainWindow):
                 i = max(0, min(int(mp.x()), len(self.ts) - 1))
                 v, c, p = self.vs[i], self.cs[i], self.ps[i]
                 t_str = self._format_tooltip_time(mp.x())
-                c_str = f"{c:.0f}μA" if c < 1000 else f"{c/1000:.1f}mA"
+                c_str = f"{c/1000:.3f} mA"
                 self.xc.setText(f" {t_str}  {v:.3f}V  {c_str}  {p:.3f}mW ")
                 self.xc.setPos(mp); self.xc.show()
         else:
@@ -1309,11 +1386,14 @@ class Main(QMainWindow):
         freq=len(idx)/dt if dt>0 else 0
 
         # Update tab analysis
+        c_avg_str = f"{avg_c/1000:.3f} mA"
+        c_max_str = f"{max(cr)/1000:.3f} mA"
+        c_min_str = f"{min(cr)/1000:.3f} mA"
         self.rv.setText(f"平均电压: {avg_v:.4f} V")
-        self.rc.setText(f"平均电流: {avg_c:.4f} mA")
+        self.rc.setText(f"平均电流: {c_avg_str}")
         self.rp.setText(f"平均功率: {avg_p:.4f} mW")
-        self.rmx.setText(f"最大电流: {max(cr):.4f} mA")
-        self.rmn.setText(f"最小电流: {min(cr):.4f} mA")
+        self.rmx.setText(f"最大电流: {c_max_str}")
+        self.rmn.setText(f"最小电流: {c_min_str}")
         self.rch.setText(f"电量(μAh): {charge:.4f}")
         self.ren.setText(f"能量(μWh): {energy:.4f}")
         self.rtm.setText(f"时长: {dt:.2f} 秒")
@@ -1487,6 +1567,22 @@ class Main(QMainWindow):
         gpi_lay.addWidget(self.spin_a,1,1)
         self.btn_co=QPushButton("连接设备"); self.btn_co.setObjectName("conn")
         self.btn_co.clicked.connect(self._connect); gpi_lay.addWidget(self.btn_co,1,2)
+        # 电流零位校准
+        cal_lay = QHBoxLayout()
+        self.lb_gpib_offset = QLabel("电流零位: 0.000 mA")
+        self.lb_gpib_offset.setStyleSheet("color:#6c7086;font-size:11px")
+        cal_lay.addWidget(self.lb_gpib_offset)
+        self.btn_zero_cal = QPushButton("零位校准")
+        self.btn_zero_cal.setObjectName("test")
+        self.btn_zero_cal.setMinimumHeight(22)
+        self.btn_zero_cal.clicked.connect(self._calibrate_gpib_zero)
+        cal_lay.addWidget(self.btn_zero_cal)
+        self.btn_reset_zero = QPushButton("重置")
+        self.btn_reset_zero.setObjectName("clear")
+        self.btn_reset_zero.setMinimumHeight(22)
+        self.btn_reset_zero.clicked.connect(self._reset_gpib_zero)
+        cal_lay.addWidget(self.btn_reset_zero)
+        gpi_lay.addLayout(cal_lay, 2, 0, 1, 4)
         lay.addWidget(self.g_gpi)
 
         # === 串口连接控制 ===
@@ -1653,7 +1749,16 @@ class Main(QMainWindow):
         self.g_gpi.setVisible(self.device_mode == "gpib")
         self.g_ser.setVisible(self.device_mode == "luatos")
         self._update_connect_btn()
+        self._update_chart_axis_labels()
         self.statusBar().showMessage(f"设备模式: {'GPIB' if self.device_mode=='gpib' else 'LuatOS串口'}")
+
+    def _update_chart_axis_labels(self):
+        """Refresh Y-axis labels for current unit (mA/uA) based on device mode"""
+        label = self._curr_axis_label()
+        is_dark = self.theme_idx != 1
+        self.pm.setLabel("left", label, color="#89b4fa" if is_dark else "#1e66f5")
+        label_color = "#6c7086" if is_dark else "#7c7f93"
+        self.pc.setLabel("left", label, color=label_color)
 
     def _update_connect_btn(self):
         if self.device_mode == "gpib":
@@ -1684,16 +1789,21 @@ class Main(QMainWindow):
         if self.chk_auto.isChecked():
             self.pm.plotItem.vb.enableAutoRange(axis=self.pm.plotItem.vb.YAxis)
             self.pm_vb2.enableAutoRange(axis=self.pm_vb2.YAxis)
-            # Set X axis minimum to 0
             self.pm.plotItem.vb.enableAutoRange(axis=self.pm.plotItem.vb.XAxis, enable=False)
             self.pm.plotItem.vb.setXRange(0, max(self.ts[-1] if self.ts else 10, 10), padding=0)
         else:
             self.pm.plotItem.vb.enableAutoRange(axis=self.pm.plotItem.vb.YAxis, enable=False)
             self.pm_vb2.enableAutoRange(axis=self.pm_vb2.YAxis, enable=False)
-            cmin=self.spin_cmin.value(); cmax=self.spin_cmax.value()
-            self.pm.plotItem.vb.setYRange(cmin,cmax,padding=0)
-            vmin=self.spin_vmin.value(); vmax=self.spin_vmax.value()
-            self.pm_vb2.setYRange(vmin,vmax,padding=0)
+            if self.cs:
+                cs_disp = [c * 0.001 for c in self.cs]
+                ym = max(max(cs_disp) * 1.1, 0.01)
+                self.pm.plotItem.vb.setYRange(0, ym, padding=0)
+            if self.vs:
+                vmin = min(self.vs); vmax = max(self.vs)
+                if vmax > vmin:
+                    self.pm_vb2.setYRange(vmin * 0.9, vmax * 1.1, padding=0)
+                else:
+                    self.pm_vb2.setYRange(0, max(vmax * 1.1, 0.1), padding=0)
 
     def _ts(self, s):
         self.track_side=s
@@ -1734,15 +1844,18 @@ class Main(QMainWindow):
                 self.analysis_win = None
 
     def _mode(self):
-        if self.act_mode.text()=="切换到合并模式":
-            self.act_mode.setText("切换到双波形模式")
-            self.pc.hide(); self.pv.hide(); self.pm.show()
-            # Auto-adapt off for merged mode
-            self.chk_auto.setChecked(False)
-            self._auto_adapt()
-        else:
-            self.act_mode.setText("切换到合并模式")
-            self.pm.hide(); self.pc.show(); self.pv.show()
+        try:
+            if self.act_mode.text()=="切换到合并模式":
+                self.act_mode.setText("切换到双波形模式")
+                self.pc.hide(); self.pv.hide(); self.pm.show()
+                self.chk_auto.setChecked(False)
+            else:
+                self.act_mode.setText("切换到合并模式")
+                self.pm.hide(); self.pc.show(); self.pv.show()
+            # Refresh display with current data
+            self._ui()
+        except Exception as e:
+            logger.error(f"切换模式异常: {e}")
 
     def _screenshot_region(self):
         """Screenshot the current plot with selection region"""
@@ -2064,23 +2177,81 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         else:
             self._connect_serial()
 
+    def _quick_connect(self):
+        """快速连接按钮：根据下拉框选择设备类型"""
+        mode = self.cb_quick_type.currentText()
+        if mode.startswith("GPIB"):
+            # 同步到settings页面的模式选择
+            self.cb_mode.setCurrentIndex(0)
+            self._on_device_mode_changed(0)
+            self._connect_gpib()
+            # 更新按钮状态
+            self.btn_quick_conn.setText("断开" if gpib_ud >= 0 else "连接")
+        else:
+            self.cb_mode.setCurrentIndex(1)
+            self._on_device_mode_changed(1)
+            self._connect_serial()
+            self.btn_quick_conn.setText("断开" if _libusb_dev else "连接")
+
     def _connect_gpib(self):
         if not GPIB_OK: QMessageBox.warning(self,"提示","GPIB驱动未加载"); return
         board=self.spin_board.value(); addr=self.spin_a.value()
-        if gpib_ud>=0: g_close(); self.btn_co.setText("连接设备"); self.statusBar().showMessage("已断开")
-        elif g_open(board,addr): self.btn_co.setText("断开设备"); self.statusBar().showMessage(f"已连接 (板卡{board} 地址{addr})")
+        if gpib_ud>=0: g_close(); self.btn_co.setText("连接设备"); self.btn_quick_conn.setText("连接"); self.statusBar().showMessage("已断开")
+        elif g_open(board,addr): self.btn_co.setText("断开设备"); self.btn_quick_conn.setText("断开"); self.statusBar().showMessage(f"已连接 (板卡{board} 地址{addr})")
         else: QMessageBox.critical(self,"失败","连接失败")
 
     def _connect_serial(self):
         if _libusb_dev:
             s_close()
             self.btn_ser_co.setText("连接设备")
+            self.btn_quick_conn.setText("连接")
             self.statusBar().showMessage("USB设备已断开")
         elif s_open():
             self.btn_ser_co.setText("断开设备")
+            self.btn_quick_conn.setText("断开")
             self.statusBar().showMessage(f"IotPower-cc 已连接")
         else:
             QMessageBox.critical(self, "失败", "未找到 IotPower-cc 设备，请确认设备已连接")
+
+    def _calibrate_gpib_zero(self):
+        """GPIB电流零位校准：空载时测量偏置电流"""
+        global _gpib_current_offset
+        if not GPIB_OK or gpib_ud < 0:
+            QMessageBox.warning(self, "提示", "请先连接GPIB设备")
+            return
+        ret = QMessageBox.question(self, "零位校准",
+            "请确保输出已关闭(OUTP OFF)且负载已断开，\n"
+            "然后点击「是」开始测量零位偏置电流。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ret != QMessageBox.Yes:
+            return
+        samples = []
+        for i in range(10):
+            cs = g_qry("MEAS:CURR?")
+            if cs:
+                try:
+                    samples.append(float(cs) * 1000)  # A→mA
+                except:
+                    pass
+            time.sleep(0.05)
+        if samples:
+            offset = sum(samples) / len(samples)
+            _gpib_current_offset = round(offset, 4)
+            self.lb_gpib_offset.setText(f"电流零位: {_gpib_current_offset:.4f} mA")
+            logger.info(f"[GPIB-ZERO] 零位校准完成: {_gpib_current_offset:.4f} mA (共{len(samples)}个样本)")
+            QMessageBox.information(self, "完成",
+                f"零位校准完成\n偏置电流: {_gpib_current_offset:.4f} mA\n"
+                f"后续测量将自动减去该值")
+        else:
+            QMessageBox.warning(self, "失败", "未能读取到电流数据")
+
+    def _reset_gpib_zero(self):
+        """重置GPIB电流零位偏移"""
+        global _gpib_current_offset
+        _gpib_current_offset = 0.0
+        self.lb_gpib_offset.setText("电流零位: 0.0000 mA")
+        logger.info("[GPIB-ZERO] 零位偏移已重置为0")
+        QMessageBox.information(self, "已重置", "电流零位偏移已清除")
 
     def _start(self):
         if not self.test_mode:
@@ -2143,8 +2314,9 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
                         continue
                 else:
                     vs=g_qry("MEAS:VOLT?"); cs=g_qry("MEAS:CURR?")
-                    v=float(vs) if vs else 0; c=float(cs)*1000 if cs else 0
-                t=time.time()-self.t0; p=v*c/1000.0  # V * uA / 1000 = mW
+                    v=float(vs) if vs else 0; c=float(cs)*1000000 if cs else 0  # A → µA
+                    c -= _gpib_current_offset * 1000  # 减去零位偏置（mA→µA）
+                t=time.time()-self.t0; p=v*c/1000.0  # V * µA / 1000 = mW
                 with lock:
                     self.ts.append(t); self.vs.append(v); self.cs.append(c); self.ps.append(p)
                     self.max_c=max(self.max_c,c); self.min_c=min(self.min_c,c)
@@ -2159,9 +2331,21 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
     def _auto_save(self):
         try:
             path=os.path.join(log_dir, f"auto_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+            if self.time_mode and self.t0_abs:
+                time_header = "系统时间"
+                time_fmt = "%Y/%m/%d %H:%M:%S.%f"
+            else:
+                time_header = "时间(s)"
+                time_fmt = None
             with open(path,"w",newline="",encoding="utf-8") as f:
-                w=csv.writer(f); w.writerow(["时间","电压(V)","电流(uA)","功率(mW)"])
-                for t,v,c,p in zip(self.ts,self.vs,self.cs,self.ps): w.writerow([f"{t:.4f}",f"{v:.4f}",f"{c:.4f}",f"{p:.4f}"])
+                w=csv.writer(f); w.writerow([time_header,"电压(V)","电流(uA)","功率(mW)"])
+                for t,v,c,p in zip(self.ts,self.vs,self.cs,self.ps):
+                    if time_fmt:
+                        dt = self.t0_abs + timedelta(seconds=t)
+                        ts = dt.strftime(time_fmt)[:-3]
+                    else:
+                        ts = f"{t:.4f}"
+                    w.writerow([ts,f"{v:.4f}",f"{c:.4f}",f"{p:.4f}"])
             logger.info(f"自动保存: {path}")
         except Exception as e: logger.error(f"自动保存失败: {e}")
 
@@ -2175,10 +2359,13 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         lc,lv,lp=self.cs[-1],self.vs[-1],self.ps[-1]
         is_merged=self.act_mode.text()=="切换到双波形模式"
 
+        # Always display in mA (internal µA ÷ 1000)
+        cs_disp = [c * 0.001 for c in self.cs]
+
         # Update plots based on mode
         lw=self.spin_lw.value()
         if is_merged:
-            self.cm_c.setData(self.ts,self.cs)
+            self.cm_c.setData(self.ts, cs_disp)
             self.cm_c.setPen(pg.mkPen("#89b4fa",width=lw))
             self.cm_c.setBrush(pg.mkBrush(137,180,250,40))
             self.cm_v.setData(self.ts,self.vs)
@@ -2190,7 +2377,7 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
                     x_min=max(0, self.ts[-1]-60)
                     vb.setXRange(x_min,self.ts[-1],padding=0)
         else:
-            self.cc.setData(self.ts,self.cs)
+            self.cc.setData(self.ts, cs_disp)
             self.cc.setPen(pg.mkPen("#89b4fa",width=lw))
             self.cv.setData(self.ts,self.vs)
             self.cv.setPen(pg.mkPen("#f38ba8",width=lw))
@@ -2204,7 +2391,7 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
             # Y range for dual (only when not auto-adapt)
             if not self.chk_auto.isChecked():
                 if self.cs:
-                    ym=max(max(self.cs)*1.1,10)
+                    ym=max(max(cs_disp)*1.1,0.01)
                     if self.coord_mode==0: self.pc.plotItem.vb.setYRange(0,ym,padding=0)
                     elif self.coord_mode==1: self.pc.plotItem.vb.setYRange(0,200,padding=0)
                 if self.vs:
@@ -2214,18 +2401,19 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
             else:
                 # Auto-adapt Y range based on data
                 if self.cs:
-                    ym=max(max(self.cs)*1.1,10)
+                    ym=max(max(cs_disp)*1.1,0.01)
                     self.pc.plotItem.vb.setYRange(0,ym,padding=0)
                 if self.vs:
                     ymn=max(0,min(self.vs)*0.9); ymx=max(self.vs)*1.1
                     self.pv.plotItem.vb.setYRange(ymn,ymx,padding=0)
 
         # Labels
+        lc_disp = lc * 0.001  # µA → mA
         if is_merged:
             # Current: label at LEFT axis edge (in scene coordinates)
-            self.tc_m.setPos(lc)
-            scene_pos = self.pm.plotItem.vb.mapViewToScene(pg.Point(0, lc))
-            c_label = f"{lc:.0f}μA" if lc < 1000 else f"{lc/1000:.1f}mA"
+            self.tc_m.setPos(lc_disp)
+            scene_pos = self.pm.plotItem.vb.mapViewToScene(pg.Point(0, lc_disp))
+            c_label = f"{lc/1000:.3f} mA"
             self.lmc.setText(f" {c_label} ")
             self.lmc.setPos(scene_pos.x(), scene_pos.y())
             self.lmc.show()
@@ -2246,9 +2434,9 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
             self.tm_m.setPos(self.ts[-1])
         else:
             # Current: label at LEFT axis edge (in scene coordinates)
-            self.tc.setPos(lc)
-            scene_pos_c = self.pc.plotItem.vb.mapViewToScene(pg.Point(0, lc))
-            c_label = f"{lc:.0f}μA" if lc < 1000 else f"{lc/1000:.1f}mA"
+            self.tc.setPos(lc_disp)
+            scene_pos_c = self.pc.plotItem.vb.mapViewToScene(pg.Point(0, lc_disp))
+            c_label = f"{lc/1000:.3f} mA"
             self.lc.setText(f" {c_label} ")
             self.lc.setPos(scene_pos_c.x(), scene_pos_c.y())
             self.lc.show()
@@ -2264,22 +2452,22 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
 
         # Stats - instant or average
         if self.display_mode=="instant":
-            c_str = f"{lc:.1f} μA" if lc < 1000 else f"{lc/1000:.3f} mA"
+            c_str = f"{lc/1000:.3f} mA"
             self.lb_ic.setText(c_str); self.lb_iv.setText(f"{lv:.4f} V"); self.lb_ip.setText(f"{lp:.3f} mW")
         else:
             # Sliding average (last 100 points)
             n=min(100,len(self.cs))
             avg_c=sum(self.cs[-n:])/n; avg_v=sum(self.vs[-n:])/n; avg_p=sum(self.ps[-n:])/n
-            c_str = f"{avg_c:.1f} μA" if avg_c < 1000 else f"{avg_c/1000:.3f} mA"
+            c_str = f"{avg_c/1000:.3f} mA"
             self.lb_ic.setText(c_str); self.lb_iv.setText(f"{avg_v:.4f} V"); self.lb_ip.setText(f"{avg_p:.3f} mW")
 
         # Global stats
         ac=sum(self.cs)/len(self.cs); av=sum(self.vs)/len(self.vs); ap=sum(self.ps)/len(self.ps)
-        ac_str = f"{ac:.1f} μA" if ac < 1000 else f"{ac/1000:.1f} mA"
+        ac_str = f"{ac/1000:.3f} mA"
         self.lb_ac.setText(f"平均电流: {ac_str}"); self.lb_av.setText(f"平均电压: {av:.4f} V")
         self.lb_ap.setText(f"平均功率: {ap:.3f} mW")
-        mx_str = f"{self.max_c:.1f} μA" if self.max_c < 1000 else f"{self.max_c/1000:.1f} mA"
-        mn_str = f"{self.min_c:.1f} μA" if self.min_c < 1000 else f"{self.min_c/1000:.1f} mA"
+        mx_str = f"{self.max_c/1000:.3f} mA"
+        mn_str = f"{self.min_c/1000:.3f} mA"
         self.lb_mx.setText(f"最大电流: {mx_str}"); self.lb_mn.setText(f"最小电流: {mn_str}")
         self.lb_n.setText(f"采样点数: {len(self.ts)}")
 
@@ -2351,6 +2539,7 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
 
     def _switch_unit(self):
         self.unit=1-self.unit; self._ui()
+        self.btn_unit.setText("切换 mWh/Wh" if self.unit == 0 else "切换 Wh/mWh")
 
     def _calc_m(self):
         if not self.ts: return
@@ -2358,11 +2547,17 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         if len(idx)<2: return
         vr=[self.vs[i] for i in idx]; cr=[self.cs[i] for i in idx]; pr=[self.ps[i] for i in idx]
         dt=self.ts[idx[-1]]-self.ts[idx[0]]
+        avg_c = sum(cr)/len(cr)
+        max_c = max(cr)
+        min_c = min(cr)
+        c_avg_str = f"{avg_c/1000:.3f} mA"
+        c_max_str = f"{max_c/1000:.3f} mA"
+        c_min_str = f"{min_c/1000:.3f} mA"
         self.rv.setText(f"平均电压: {sum(vr)/len(vr):.4f} V")
-        self.rc.setText(f"平均电流: {sum(cr)/len(cr):.4f} mA")
+        self.rc.setText(f"平均电流: {c_avg_str}")
         self.rp.setText(f"平均功率: {sum(pr)/len(pr):.4f} mW")
-        self.rmx.setText(f"最大电流: {max(cr):.4f} mA")
-        self.rmn.setText(f"最小电流: {min(cr):.4f} mA")
+        self.rmx.setText(f"最大电流: {c_max_str}")
+        self.rmn.setText(f"最小电流: {c_min_str}")
         self.rch.setText(f"电量(μAh): {sum(cr)/len(cr)*dt/3600*1000:.4f}")
         self.ren.setText(f"能量(μWh): {sum(pr)/len(pr)*dt/3600:.4f}")
         self.rtm.setText(f"时长: {dt:.2f} 秒")
@@ -2434,9 +2629,21 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         if not self.ts: QMessageBox.information(self,"提示","无数据"); return
         p,_=QFileDialog.getSaveFileName(self,"保存","","CSV (*.csv)")
         if p:
+            if self.time_mode and self.t0_abs:
+                time_header = "系统时间"
+                time_fmt = "%Y/%m/%d %H:%M:%S.%f"
+            else:
+                time_header = "时间(s)"
+                time_fmt = None
             with open(p,"w",newline="",encoding="utf-8") as f:
-                w=csv.writer(f); w.writerow(["时间","电压(V)","电流(uA)","功率(mW)"])
-                for t,v,c,pp in zip(self.ts,self.vs,self.cs,self.ps): w.writerow([f"{t:.4f}",f"{v:.4f}",f"{c:.4f}",f"{pp:.4f}"])
+                w=csv.writer(f); w.writerow([time_header,"电压(V)","电流(uA)","功率(mW)"])
+                for t,v,c,pp in zip(self.ts,self.vs,self.cs,self.ps):
+                    if time_fmt:
+                        dt = self.t0_abs + timedelta(seconds=t)
+                        ts = dt.strftime(time_fmt)[:-3]
+                    else:
+                        ts = f"{t:.4f}"
+                    w.writerow([ts,f"{v:.4f}",f"{c:.4f}",f"{pp:.4f}"])
             QMessageBox.information(self,"成功","已保存")
 
     def _load(self):
@@ -2445,8 +2652,22 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         self._clear()
         try:
             with open(p,"r",encoding="utf-8") as f:
-                r=csv.reader(f); next(r)
-                for row in r: self.ts.append(float(row[0])); self.vs.append(float(row[1])); self.cs.append(float(row[2])); self.ps.append(float(row[3]))
+                r=csv.reader(f)
+                header = next(r)
+                is_sys_time = header[0] == "系统时间"
+                t0_first = None
+                for row in r:
+                    if is_sys_time:
+                        dt = datetime.strptime(row[0], "%Y/%m/%d %H:%M:%S.%f")
+                        if t0_first is None:
+                            t0_first = dt
+                            self.t0_abs = t0_first
+                        t = (dt - t0_first).total_seconds()
+                    else:
+                        t = float(row[0])
+                    self.ts.append(t); self.vs.append(float(row[1])); self.cs.append(float(row[2])); self.ps.append(float(row[3]))
+            if is_sys_time and self.ts:
+                self.t0 = time.time() - self.ts[-1]
             QMessageBox.information(self,"成功","已加载")
         except Exception as e: QMessageBox.critical(self,"错误",str(e))
 
@@ -2545,11 +2766,11 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
 
         time_label = "系统时间" if self.time_mode else "时间 (s)"
         self.pm.setTitle("电压 / 电流 波形", color=title_color, size="12pt")
-        self.pm.setLabel("left", "电流 (mA)", color="#89b4fa" if is_dark else "#1e66f5")
+        self.pm.setLabel("left", self._curr_axis_label(), color="#89b4fa" if is_dark else "#1e66f5")
         self.pm.setLabel("bottom", time_label, color=label_color)
         self.pm.plotItem.getAxis('right').setLabel("电压 (V)", color="#f38ba8" if is_dark else "#d20f39")
         self.pc.setTitle("电流波形", color=title_color, size="12pt")
-        self.pc.setLabel("left", "电流 (mA)", color=label_color)
+        self.pc.setLabel("left", self._curr_axis_label(), color=label_color)
         self.pc.setLabel("bottom", time_label, color=label_color)
         self.pv.setTitle("电压波形", color=title_color, size="12pt")
         self.pv.setLabel("left", "电压 (V)", color=label_color)
@@ -2641,6 +2862,15 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         self._on_device_mode_changed(mode_idx)
         port=s.value("serial_port","")
         if port: self.cb_serial_port.setCurrentText(port)
+        # 快速连接设备类型持久化
+        quick_type_idx = s.value("quick_connect_type", 1, type=int)  # 默认USB
+        if 0 <= quick_type_idx < self.cb_quick_type.count():
+            self.cb_quick_type.setCurrentIndex(quick_type_idx)
+        # GPIB电流零位偏移恢复
+        global _gpib_current_offset
+        _gpib_current_offset = s.value("gpib_current_offset", 0.0, type=float)
+        if hasattr(self, 'lb_gpib_offset'):
+            self.lb_gpib_offset.setText(f"电流零位: {_gpib_current_offset:.4f} mA")
 
     def _save_settings(self):
         s=QSettings("PG-Power","settings")
@@ -2664,6 +2894,8 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         s.setValue("sample_interval",self.sample_interval)
         s.setValue("device_mode",self.device_mode)
         s.setValue("serial_port",self.cb_serial_port.currentText())
+        s.setValue("quick_connect_type", self.cb_quick_type.currentIndex())
+        s.setValue("gpib_current_offset", _gpib_current_offset)
 
     def closeEvent(self, e):
         self.collecting=False

@@ -172,6 +172,7 @@ _c_filtered = 0
 _sample_cnt = 0
 _c_raw_history = []  # size: 50
 _v_raw_history = []  # size: 50
+_prev_hist_v_mid = 0  # 上次历史中位数（基线漂移/负载切换检测）
 
 
 def read_packet():
@@ -186,7 +187,7 @@ def read_packet():
       - 16 组采样取中位数
     """
     global _debug_cnt, _debug_v_cnt, _v_filtered, _c_filtered, _sample_cnt
-    global _c_raw_history, _v_raw_history
+    global _c_raw_history, _v_raw_history, _prev_hist_v_mid
 
     if _dev is None or _ep_in is None:
         return None
@@ -227,7 +228,36 @@ def read_packet():
     v_med = vs[mid]
     c_med = cs[mid]
 
-    # ---- 电流异常过滤 (同步包伪影: c_raw 跳变至 7000+，正常 ~688) ----
+    # ===== ADC量程归一化: 将不同量程下的raw值归一化到量程1 =====
+    def _detect_range(v):
+        if 15000 < v < 18000: return 1
+        if 33000 < v < 36000: return 2
+        if 48000 < v < 50000: return 3
+        return 0
+    cur_range = _detect_range(v_med)
+    if cur_range > 1:
+        v_med //= cur_range
+        c_med //= cur_range
+        logger.debug(f"[IOT-RANGE] 量程{cur_range}归一化: v={v_med} c={c_med}")
+
+    # ---- 负载切换检测: 电流突变时重置所有历史基线 ----
+    # ⚡ 必须放在 OUTLIER/V-FILTER 之前，否则负载数据会被误拦截
+    if len(_c_raw_history) >= 5 and len(_v_raw_history) >= 5:
+        c_hist_mid = sorted(_c_raw_history)[len(_c_raw_history) // 2]
+        if c_hist_mid > 100 and abs(c_med - c_hist_mid) > c_hist_mid * 2.5:
+            _v_raw_history.clear()
+            _c_raw_history.clear()
+            _prev_hist_v_mid = 0
+            logger.info(
+                f"[BASELINE-RESET] 检测到负载切换，重置基线 "
+                f"c_med={c_med}(→{c_med/9.9:.1f}μA) "
+                f"历史c_mid={c_hist_mid:.0f}(→{c_hist_mid/9.9:.1f}μA) "
+                f"变化={abs(c_med-c_hist_mid)/c_hist_mid*100:.0f}%"
+            )
+            _sample_cnt += 1
+            return (v_med, c_med)
+
+    # ---- 电流异常过滤 (仅日志，不丢弃 — 原始客户端即如此) ----
     if len(_c_raw_history) >= 5:
         hist_mid = sorted(_c_raw_history)[len(_c_raw_history) // 2]
         if hist_mid > 100 and abs(c_med - hist_mid) > hist_mid * 5:
@@ -235,28 +265,40 @@ def read_packet():
             if _debug_cnt < 10:
                 logger.debug(
                     f"[C-FILTER] #{_c_filtered} c_raw={c_med} "
-                    f"hist_mid={hist_mid:.0f} 偏差={abs(c_med-hist_mid)/hist_mid*100:.0f}% 已过滤"
+                    f"hist_mid={hist_mid:.0f} 偏差={abs(c_med-hist_mid)/hist_mid*100:.0f}% (记录不过滤)"
                 )
                 _debug_cnt += 1
-            return None
+            # 不再 return None — 允许数据通过
 
-    # ---- 电压异常过滤 (ADC跳变: 正常~16400-17024, 异常~34386/8.5V 或 ~49200/12.2V) ----
+    # ---- 电压异常过滤 ----
     if len(_v_raw_history) >= 5:
-        hist_v_mid = sorted(_v_raw_history)[len(_v_raw_history) // 2]
+        hist_v_all = sorted(_v_raw_history)
+        hist_v_mid = hist_v_all[len(hist_v_all) // 2]
         deviation = abs(v_med - hist_v_mid) / hist_v_mid if hist_v_mid > 0 else 0
-        if hist_v_mid > 100 and deviation > 0.3:  # 偏离历史中位数 > 30%
+        dev_threshold = 0.45
+
+        # ---- 异常判定 ----
+        is_anomaly = (hist_v_mid > 100 and deviation > dev_threshold)
+
+        if is_anomaly:
             _v_filtered += 1
             logger.info(
                 f"[V-FILTER] #{_v_filtered} v_raw={v_med} hist_mid={hist_v_mid:.0f} "
-                f"偏差={deviation*100:.1f}% v_换算={v_med/4044.0:.2f}V c_raw={c_med} 已过滤"
+                f"偏差={deviation*100:.1f}% (阈值{dev_threshold*100:.0f}%) 已过滤"
             )
             if _debug_v_cnt < 10:
-                hist_v_all = sorted(_v_raw_history)
                 logger.debug(
                     f"[V-FILTER-DBG] v_hist(最近{len(hist_v_all)}点) "
                     f"min={hist_v_all[0]} max={hist_v_all[-1]} mid={hist_v_mid:.0f}"
                 )
                 _debug_v_cnt += 1
+
+            # 连续过滤超阈值时自动重置基线
+            if _v_filtered % 100 == 0:
+                logger.warning(f"[V-FILTER-AUTO-RESET] 已过滤{_v_filtered}次，自动重置基线")
+                _v_raw_history.clear()
+                _prev_hist_v_mid = 0
+
             return None
 
     # ---- 定期状态报告 ----
