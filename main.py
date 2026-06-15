@@ -806,22 +806,21 @@ class Main(QMainWindow):
         self.t0_abs=None
         self.setMouseTracking(True)
 
-        # Test phases — 负载升降测试波形 (mA单位, *1000→µA)
-        self.phases=[
-            {"n":"待机","d":40,"v":5.0,"c":0.3,"s":0.010},
-            {"n":"轻载10mA","d":40,"v":5.0,"c":10,"s":0.050},
-            {"n":"中载50mA","d":40,"v":5.0,"c":50,"s":0.10},
-            {"n":"负载100mA","d":40,"v":5.0,"c":100,"s":0.20},
-            {"n":"重载200mA","d":40,"v":5.0,"c":200,"s":0.50},
-            {"n":"高载500mA","d":40,"v":5.0,"c":500,"s":1.0},
-            {"n":"最大1000mA","d":40,"v":5.0,"c":1000,"s":2.0},
-            {"n":"下降500mA","d":40,"v":5.0,"c":500,"s":1.0},
-            {"n":"下降200mA","d":40,"v":5.0,"c":200,"s":0.50},
-            {"n":"下降100mA","d":40,"v":5.0,"c":100,"s":0.20},
-            {"n":"下降50mA","d":40,"v":5.0,"c":50,"s":0.10},
-            {"n":"下降10mA","d":40,"v":5.0,"c":10,"s":0.050},
-            {"n":"待机","d":60,"v":5.0,"c":0.3,"s":0.010},
-        ]
+        # Test phases — 阶梯升降波形 (mA单位, *1000→µA)
+        _ph = []
+        # 待机
+        _ph.append({"n":"待机","d":60,"v":5.0,"c":0.3,"s":0.010})
+        # 上升: 0→1000mA, 5mA步进, 每步100ms (d=2 @50ms)
+        for c in range(0, 1005, 5):
+            _ph.append({"n":f"↑{c}mA","d":2,"v":5.0,"c":c,"s":max(c*0.005, 0.01)})
+        # 峰值保持 2s
+        _ph.append({"n":"峰值1000mA","d":40,"v":5.0,"c":1000,"s":2.0})
+        # 下降: 995→0mA, 5mA步进, 每步1秒 (d=20 @50ms)
+        for c in range(995, -5, -5):
+            _ph.append({"n":f"↓{c}mA","d":20,"v":5.0,"c":c,"s":max(c*0.005, 0.01)})
+        # 待机结束
+        _ph.append({"n":"待机","d":60,"v":5.0,"c":0.3,"s":0.010})
+        self.phases = _ph
         self.phi=0; self.pe=0
 
         # Cache settings
@@ -1077,6 +1076,7 @@ class Main(QMainWindow):
         # Set ViewBox limits to prevent negative values
         self.pc.plotItem.vb.setLimits(xMin=0, yMin=0)
         self.pc.plotItem.vb.enableAutoRange(enable=False)
+        self.pc.plotItem.vb.autoRangeBtn.show()
         self.cc=self.pc.plot(pen=pg.mkPen("#89b4fa",width=2),fillLevel=0,brush=pg.mkBrush(137,180,250,40))
         self.vc=pg.InfiniteLine(90,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.hc=pg.InfiniteLine(0,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
@@ -1107,6 +1107,7 @@ class Main(QMainWindow):
         # Set ViewBox limits to prevent negative values
         self.pv.plotItem.vb.setLimits(xMin=0, yMin=0)
         self.pv.plotItem.vb.enableAutoRange(enable=False)
+        self.pv.plotItem.vb.autoRangeBtn.show()
         self.cv=self.pv.plot(pen=pg.mkPen("#f38ba8",width=2))
         self.vvl=pg.InfiniteLine(90,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.hvl=pg.InfiniteLine(0,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
