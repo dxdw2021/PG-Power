@@ -1076,7 +1076,8 @@ class Main(QMainWindow):
         # Set ViewBox limits to prevent negative values
         self.pc.plotItem.vb.setLimits(xMin=0, yMin=0)
         self.pc.plotItem.vb.enableAutoRange(enable=False)
-        self.pc.plotItem.vb.autoRangeBtn.show()
+        if hasattr(self.pc.plotItem.vb, 'autoRangeBtn') and self.pc.plotItem.vb.autoRangeBtn:
+            self.pc.plotItem.vb.autoRangeBtn.show()
         self.cc=self.pc.plot(pen=pg.mkPen("#89b4fa",width=2),fillLevel=0,brush=pg.mkBrush(137,180,250,40))
         self.vc=pg.InfiniteLine(90,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.hc=pg.InfiniteLine(0,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
@@ -1107,7 +1108,8 @@ class Main(QMainWindow):
         # Set ViewBox limits to prevent negative values
         self.pv.plotItem.vb.setLimits(xMin=0, yMin=0)
         self.pv.plotItem.vb.enableAutoRange(enable=False)
-        self.pv.plotItem.vb.autoRangeBtn.show()
+        if hasattr(self.pv.plotItem.vb, 'autoRangeBtn') and self.pv.plotItem.vb.autoRangeBtn:
+            self.pv.plotItem.vb.autoRangeBtn.show()
         self.cv=self.pv.plot(pen=pg.mkPen("#f38ba8",width=2))
         self.vvl=pg.InfiniteLine(90,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
         self.hvl=pg.InfiniteLine(0,movable=False,pen=pg.mkPen("#45475a",style=Qt.DashLine,width=1))
