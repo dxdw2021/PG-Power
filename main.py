@@ -2413,9 +2413,10 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         # Labels
         lc_disp = lc * 0.001  # µA → mA
         if is_merged:
-            # Current: label at LEFT axis edge (in scene coordinates)
+            # Current: label at visible LEFT edge
+            x_left = self.pm.plotItem.vb.viewRange()[0][0]
             self.tc_m.setPos(lc_disp)
-            scene_pos = self.pm.plotItem.vb.mapViewToScene(pg.Point(0, lc_disp))
+            scene_pos = self.pm.plotItem.vb.mapViewToScene(pg.Point(x_left, lc_disp))
             c_label = f"{lc/1000:.3f} mA"
             self.lmc.setText(f" {c_label} ")
             self.lmc.setPos(scene_pos.x(), scene_pos.y())
@@ -2436,16 +2437,18 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
             # Vertical time indicator line (merged)
             self.tm_m.setPos(self.ts[-1])
         else:
-            # Current: label at LEFT axis edge (in scene coordinates)
+            # Current: label at visible LEFT edge
+            x_left_c = self.pc.plotItem.vb.viewRange()[0][0]
             self.tc.setPos(lc_disp)
-            scene_pos_c = self.pc.plotItem.vb.mapViewToScene(pg.Point(0, lc_disp))
+            scene_pos_c = self.pc.plotItem.vb.mapViewToScene(pg.Point(x_left_c, lc_disp))
             c_label = f"{lc/1000:.3f} mA"
             self.lc.setText(f" {c_label} ")
             self.lc.setPos(scene_pos_c.x(), scene_pos_c.y())
             self.lc.show()
-            # Voltage: label at LEFT axis edge (in scene coordinates)
+            # Voltage: label at visible LEFT edge
+            x_left_v = self.pv.plotItem.vb.viewRange()[0][0]
             self.tvl.setPos(lv)
-            scene_pos_v2 = self.pv.plotItem.vb.mapViewToScene(pg.Point(0, lv))
+            scene_pos_v2 = self.pv.plotItem.vb.mapViewToScene(pg.Point(x_left_v, lv))
             self.lvl.setText(f" {lv:.3f}V ")
             self.lvl.setPos(scene_pos_v2.x(), scene_pos_v2.y())
             # Vertical time indicator lines (dual)
