@@ -62,6 +62,8 @@ def get_dll():
 
 GPIB_OK = False; ni4882 = None; gpib_ud = -1; lock = threading.Lock()
 _gpib_current_offset = 0.0  # mA, GPIB电流零位校准偏移量
+_usb_current_offset = 0     # raw ADC, USB电流零位校准偏移量
+_usb_v_divider = 4044.0     # USB电压校准系数 (v_raw / V)
 dll = get_dll()
 if dll:
     try:
@@ -1600,6 +1602,18 @@ class Main(QMainWindow):
         self.btn_ser_co=QPushButton("连接设备"); self.btn_ser_co.setObjectName("conn")
         self.btn_ser_co.clicked.connect(self._connect)
         ser_lay.addWidget(self.btn_ser_co,1,1)
+        # USB校准
+        cal_lay2 = QHBoxLayout()
+        self.btn_usb_cal = QPushButton("电流零位校准（空载）"); self.btn_usb_cal.setObjectName("save")
+        self.btn_usb_cal.clicked.connect(self._calibrate_usb_zero)
+        cal_lay2.addWidget(self.btn_usb_cal)
+        self.btn_usb_reset = QPushButton("重置零位"); self.btn_usb_reset.setObjectName("clear")
+        self.btn_usb_reset.clicked.connect(self._reset_usb_zero)
+        cal_lay2.addWidget(self.btn_usb_reset)
+        self.lb_usb_offset = QLabel("电流零位: 0 raw")
+        self.lb_usb_offset.setStyleSheet("font-size:11px")
+        cal_lay2.addWidget(self.lb_usb_offset)
+        ser_lay.addLayout(cal_lay2, 2, 0, 1, 3)
         self.g_ser.hide()
         lay.addWidget(self.g_ser)
 
@@ -2258,6 +2272,44 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         logger.info("[GPIB-ZERO] 零位偏移已重置为0")
         QMessageBox.information(self, "已重置", "电流零位偏移已清除")
 
+    def _calibrate_usb_zero(self):
+        """USB电流零位校准：空载时测量偏置电流"""
+        global _usb_current_offset
+        if not USB_OK or not _libusb_dev:
+            QMessageBox.warning(self, "提示", "请先连接USB设备")
+            return
+        ret = QMessageBox.question(self, "零位校准",
+            "请确保负载已断开，\n"
+            "然后点击「是」开始测量零位偏置电流。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ret != QMessageBox.Yes:
+            return
+        samples = []
+        for i in range(10):
+            sample = s_readline()
+            if sample:
+                v_raw, c_raw = sample
+                samples.append(c_raw)
+            time.sleep(0.05)
+        if samples:
+            offset = round(sum(samples) / len(samples))
+            _usb_current_offset = offset
+            self.lb_usb_offset.setText(f"电流零位: {offset} raw ({offset/9.9:.1f}μA)")
+            logger.info(f"[USB-ZERO] 零位校准完成: {offset} raw (共{len(samples)}个样本)")
+            QMessageBox.information(self, "完成",
+                f"零位校准完成\n偏置电流: {offset} raw ({offset/9.9:.1f}μA)\n"
+                f"后续测量将自动减去该值")
+        else:
+            QMessageBox.warning(self, "失败", "未能读取到数据")
+
+    def _reset_usb_zero(self):
+        """重置USB电流零位偏移"""
+        global _usb_current_offset
+        _usb_current_offset = 0
+        self.lb_usb_offset.setText("电流零位: 0 raw")
+        logger.info("[USB-ZERO] 零位偏移已重置为0")
+        QMessageBox.information(self, "已重置", "USB电流零位偏移已清除")
+
     def _start(self):
         if not self.test_mode:
             if self.device_mode == "gpib" and (not GPIB_OK or gpib_ud < 0):
@@ -2313,10 +2365,10 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
                     if sample is not None:
                         v_raw, c_raw = sample
                         # Calibration: v_raw~16985→4.2V, c_raw~688→69.5uA
-                        # v = v_raw / 4044 (V)
-                        # c = c_raw / 9900 (mA) = c_raw / 9.9 (uA)
-                        v = v_raw / 4044.0
-                        c = c_raw / 9.9  # uA
+                        # v = v_raw / _usb_v_divider (V)
+                        # c = (c_raw - _usb_current_offset) / 9.9 (uA)
+                        v = v_raw / _usb_v_divider
+                        c = max(0, c_raw - _usb_current_offset) / 9.9  # uA
                         sample_cnt += 1
                         if sample_cnt <= 3 or sample_cnt % 200 == 0:
                             logger.info(f"#{sample_cnt} v_raw={v_raw} c_raw={c_raw} → V={v:.3f} C={c:.1f}uA")
@@ -2883,10 +2935,15 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         if 0 <= quick_type_idx < self.cb_quick_type.count():
             self.cb_quick_type.setCurrentIndex(quick_type_idx)
         # GPIB电流零位偏移恢复
-        global _gpib_current_offset
+        global _gpib_current_offset, _usb_current_offset, _usb_v_divider
         _gpib_current_offset = s.value("gpib_current_offset", 0.0, type=float)
         if hasattr(self, 'lb_gpib_offset'):
             self.lb_gpib_offset.setText(f"电流零位: {_gpib_current_offset:.4f} mA")
+        # USB电流零位偏移恢复
+        _usb_current_offset = s.value("usb_current_offset", 0, type=int)
+        _usb_v_divider = s.value("usb_v_divider", 4044.0, type=float)
+        if hasattr(self, 'lb_usb_offset'):
+            self.lb_usb_offset.setText(f"电流零位: {_usb_current_offset} raw ({_usb_current_offset/9.9:.1f}μA)")
 
     def _save_settings(self):
         s=QSettings("PG-Power","settings")
@@ -2912,6 +2969,8 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         s.setValue("serial_port",self.cb_serial_port.currentText())
         s.setValue("quick_connect_type", self.cb_quick_type.currentIndex())
         s.setValue("gpib_current_offset", _gpib_current_offset)
+        s.setValue("usb_current_offset", _usb_current_offset)
+        s.setValue("usb_v_divider", _usb_v_divider)
 
     def closeEvent(self, e):
         self.collecting=False
