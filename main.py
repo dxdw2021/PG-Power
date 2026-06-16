@@ -2387,12 +2387,12 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
             QMessageBox.warning(self, "提示", "请先输入已知电压值(>0V)")
             return
         samples = []
-        for i in range(20):  # 20次采样提高精度
+        for i in range(50):  # 50次采样进一步提高精度
             sample = s_readline()
             if sample:
                 v_raw, c_raw = sample
                 samples.append(v_raw)
-            time.sleep(0.05)
+            time.sleep(0.02)  # 20ms间隔，更快完成
         if samples:
             v_now = sum(samples) / len(samples)
             delta_raw = v_now - _usb_v_zero
