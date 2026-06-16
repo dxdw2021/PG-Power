@@ -266,8 +266,12 @@ def s_readline():
         return None
 
     vs.sort(); cs.sort()
-    mid = len(vs) // 2
-    v_med = vs[mid]
+
+    # 电压取平均（比中位数更平滑，抑制1count量化噪声）
+    v_med = sum(vs) / len(vs)
+
+    # 电流仍取中位数（抗个别毛刺）
+    mid = len(cs) // 2
     c_med = cs[mid]
 
     # ---- 电流跳变限幅: 抑制ADC漂移导致的尖峰 ----
