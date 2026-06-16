@@ -2184,17 +2184,19 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         """快速连接按钮：根据下拉框选择设备类型"""
         mode = self.cb_quick_type.currentText()
         if mode.startswith("GPIB"):
-            # 同步到settings页面的模式选择
             self.cb_mode.setCurrentIndex(0)
             self._on_device_mode_changed(0)
             self._connect_gpib()
-            # 更新按钮状态
             self.btn_quick_conn.setText("断开" if gpib_ud >= 0 else "连接")
+            if gpib_ud >= 0:
+                self._exit_test_mode()
         else:
             self.cb_mode.setCurrentIndex(1)
             self._on_device_mode_changed(1)
             self._connect_serial()
             self.btn_quick_conn.setText("断开" if _libusb_dev else "连接")
+            if _libusb_dev:
+                self._exit_test_mode()
 
     def _connect_gpib(self):
         if not GPIB_OK: QMessageBox.warning(self,"提示","GPIB驱动未加载"); return
@@ -2286,7 +2288,15 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
     def _toggle_test(self):
         if self.btn_te.text()=="测试模式":
             self.test_mode=True; self.btn_te.setText("退出测试"); self._clear(force=True); self._start()
-        else: self.test_mode=False; self.btn_te.setText("测试模式"); self._stop()
+        else: self._exit_test_mode()
+
+    def _exit_test_mode(self):
+        """退出测试模式，停止采集并清空模拟数据"""
+        if self.test_mode:
+            self.test_mode=False; self.btn_te.setText("测试模式")
+            if self.collecting: self._stop()
+            self._clear(force=True)
+            self.statusBar().showMessage("已退出测试模式")
 
     def _loop(self):
         loop_cnt = 0
