@@ -1608,13 +1608,27 @@ class Main(QMainWindow):
         self.btn_usb_cal = QPushButton("电流零位校准（空载）"); self.btn_usb_cal.setObjectName("save")
         self.btn_usb_cal.clicked.connect(self._calibrate_usb_zero)
         cal_lay2.addWidget(self.btn_usb_cal)
-        self.btn_usb_reset = QPushButton("重置零位"); self.btn_usb_reset.setObjectName("clear")
-        self.btn_usb_reset.clicked.connect(self._reset_usb_zero)
-        cal_lay2.addWidget(self.btn_usb_reset)
-        self.lb_usb_offset = QLabel("电流零位: 0 raw")
+        self.lb_usb_offset = QLabel("零位: V=0raw C=0raw")
         self.lb_usb_offset.setStyleSheet("font-size:11px")
         cal_lay2.addWidget(self.lb_usb_offset)
         ser_lay.addLayout(cal_lay2, 2, 0, 1, 3)
+
+        # USB电压系数校准
+        cal_lay3 = QHBoxLayout()
+        cal_lay3.addWidget(QLabel("接入已知电压(V):"))
+        self.spin_usb_v_ref = QDoubleSpinBox(); self.spin_usb_v_ref.setRange(0,30)
+        self.spin_usb_v_ref.setSingleStep(0.1); self.spin_usb_v_ref.setValue(4.2)
+        cal_lay3.addWidget(self.spin_usb_v_ref)
+        self.btn_usb_v_cal = QPushButton("校准电压系数"); self.btn_usb_v_cal.setObjectName("save")
+        self.btn_usb_v_cal.clicked.connect(self._calibrate_usb_v_scale)
+        cal_lay3.addWidget(self.btn_usb_v_cal)
+        self.lb_usb_v_scale = QLabel(f"系数: {1.0/4044.0:.6f}")
+        self.lb_usb_v_scale.setStyleSheet("font-size:11px")
+        cal_lay3.addWidget(self.lb_usb_v_scale)
+        ser_lay.addLayout(cal_lay3, 3, 0, 1, 3)
+        self.btn_usb_reset = QPushButton("重置零位"); self.btn_usb_reset.setObjectName("clear")
+        self.btn_usb_reset.clicked.connect(self._reset_usb_zero)
+        ser_lay.addWidget(self.btn_usb_reset, 4, 0)
         self.g_ser.hide()
         lay.addWidget(self.g_ser)
 
@@ -2309,12 +2323,44 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
 
     def _reset_usb_zero(self):
         """重置USB电压/电流零位偏移"""
-        global _usb_current_offset, _usb_v_zero
+        global _usb_current_offset, _usb_v_zero, _usb_v_scale
         _usb_current_offset = 0
         _usb_v_zero = 0
+        _usb_v_scale = 1.0 / 4044.0
         self.lb_usb_offset.setText("零位: V=0raw C=0raw")
-        logger.info("[USB-ZERO] 零位偏移已重置")
-        QMessageBox.information(self, "已重置", "USB零位偏移已清除")
+        self.lb_usb_v_scale.setText(f"系数: {_usb_v_scale:.6f}")
+        logger.info("[USB-ZERO] 零位与系数已重置")
+        QMessageBox.information(self, "已重置", "USB零位与系数已恢复出厂")
+
+    def _calibrate_usb_v_scale(self):
+        """电压系数校准：加载已知电压后计算缩放系数"""
+        global _usb_v_zero, _usb_v_scale
+        if _usb_v_zero == 0:
+            QMessageBox.warning(self, "提示", "请先进行空载零位校准")
+            return
+        ref_v = self.spin_usb_v_ref.value()
+        samples = []
+        for i in range(5):
+            sample = s_readline()
+            if sample:
+                v_raw, c_raw = sample
+                samples.append(v_raw)
+            time.sleep(0.05)
+        if samples:
+            v_now = sum(samples) / len(samples)
+            delta_raw = v_now - _usb_v_zero
+            if delta_raw <= 0:
+                QMessageBox.warning(self, "失败", "请确认已加载已知电压（raw应高于零位）")
+                return
+            _usb_v_scale = ref_v / delta_raw
+            self.lb_usb_v_scale.setText(f"系数: {_usb_v_scale:.6f}")
+            logger.info(f"[USB-VSCALE] 校准完成: V_ref={ref_v}V raw_delta={delta_raw:.0f} scale={_usb_v_scale:.6f}")
+            QMessageBox.information(self, "完成",
+                f"电压系数校准完成\n参考电压: {ref_v}V\n"
+                f"raw差值: {delta_raw:.0f}\n"
+                f"新系数: {_usb_v_scale:.6f} V/raw")
+        else:
+            QMessageBox.warning(self, "失败", "未能读取到数据")
 
     def _start(self):
         if not self.test_mode:
@@ -2952,6 +2998,8 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         _usb_v_scale = s.value("usb_v_scale", v_scale_def, type=float)
         if hasattr(self, 'lb_usb_offset'):
             self.lb_usb_offset.setText(f"零位: V={_usb_v_zero}raw C={_usb_current_offset}raw")
+        if hasattr(self, 'lb_usb_v_scale'):
+            self.lb_usb_v_scale.setText(f"系数: {_usb_v_scale:.6f}")
 
     def _save_settings(self):
         s=QSettings("PG-Power","settings")
