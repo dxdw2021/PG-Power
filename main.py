@@ -2387,7 +2387,7 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
             QMessageBox.warning(self, "提示", "请先输入已知电压值(>0V)")
             return
         samples = []
-        for i in range(5):
+        for i in range(20):  # 20次采样提高精度
             sample = s_readline()
             if sample:
                 v_raw, c_raw = sample
