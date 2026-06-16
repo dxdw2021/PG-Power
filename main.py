@@ -2294,8 +2294,8 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
             QMessageBox.warning(self, "提示", "请先连接USB设备")
             return
         ret = QMessageBox.question(self, "零位校准",
-            "请确保负载已断开且输出关闭(0V)，\n"
-            "然后点击「是」开始测量零位。",
+            "请确保负载已断开但电源输出开启(>0V)，\n"
+            "然后点击「是」开始测量零位（将扣除设备自身功耗）。",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ret != QMessageBox.Yes:
             return
@@ -2339,6 +2339,9 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
             QMessageBox.warning(self, "提示", "请先进行空载零位校准")
             return
         ref_v = self.spin_usb_v_ref.value()
+        if ref_v <= 0:
+            QMessageBox.warning(self, "提示", "请先输入已知电压值(>0V)")
+            return
         samples = []
         for i in range(5):
             sample = s_readline()
@@ -2349,8 +2352,11 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         if samples:
             v_now = sum(samples) / len(samples)
             delta_raw = v_now - _usb_v_zero
-            if delta_raw <= 0:
-                QMessageBox.warning(self, "失败", "请确认已加载已知电压（raw应高于零位）")
+            if delta_raw <= 10:  # 至少需要明显高于零位的差值
+                QMessageBox.warning(self, "失败",
+                    f"请确认已加载已知电压({ref_v}V)\n"
+                    f"当前raw={v_now:.0f} 零位raw={_usb_v_zero}\n"
+                    f"差值={delta_raw:.0f} 过小，请检查连接")
                 return
             _usb_v_scale = ref_v / delta_raw
             self.lb_usb_v_scale.setText(f"系数: {_usb_v_scale:.6f}")
