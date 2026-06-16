@@ -242,12 +242,17 @@ def read_packet():
 
     # ---- 负载切换检测: 电流突变时重置所有历史基线 ----
     # ⚡ 必须放在 OUTLIER/V-FILTER 之前，否则负载数据会被误拦截
-    if len(_c_raw_history) >= 5 and len(_v_raw_history) >= 5:
+    # ⏱ 每 1 秒最多重置一次，避免放电过渡期连续触发
+    _now = time.time()
+    if _now - getattr(read_packet, '_last_reset_time', 0) < 1.0:
+        pass  # 冷却期内跳过
+    elif len(_c_raw_history) >= 5 and len(_v_raw_history) >= 5:
         c_hist_mid = sorted(_c_raw_history)[len(_c_raw_history) // 2]
         if c_hist_mid > 100 and abs(c_med - c_hist_mid) > c_hist_mid * 2.5:
             _v_raw_history.clear()
             _c_raw_history.clear()
             _prev_hist_v_mid = 0
+            read_packet._last_reset_time = _now
             logger.info(
                 f"[BASELINE-RESET] 检测到负载切换，重置基线 "
                 f"c_med={c_med}(→{c_med/9.9:.1f}μA) "
