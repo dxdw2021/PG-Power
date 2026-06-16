@@ -1605,13 +1605,16 @@ class Main(QMainWindow):
         ser_lay.addWidget(self.btn_ser_co,1,1)
         # USB校准
         cal_lay2 = QHBoxLayout()
-        self.btn_usb_cal = QPushButton("电流零位校准（空载）"); self.btn_usb_cal.setObjectName("save")
-        self.btn_usb_cal.clicked.connect(self._calibrate_usb_zero)
-        cal_lay2.addWidget(self.btn_usb_cal)
+        self.btn_usb_cal_c = QPushButton("电流零位（电源开启空载）"); self.btn_usb_cal_c.setObjectName("save")
+        self.btn_usb_cal_c.clicked.connect(self._calibrate_usb_c_zero)
+        cal_lay2.addWidget(self.btn_usb_cal_c)
+        self.btn_usb_cal_v = QPushButton("电压零位（电源关闭0V）"); self.btn_usb_cal_v.setObjectName("save")
+        self.btn_usb_cal_v.clicked.connect(self._calibrate_usb_v_zero)
+        cal_lay2.addWidget(self.btn_usb_cal_v)
         self.lb_usb_offset = QLabel("零位: V=0raw C=0raw")
         self.lb_usb_offset.setStyleSheet("font-size:11px")
         cal_lay2.addWidget(self.lb_usb_offset)
-        ser_lay.addLayout(cal_lay2, 2, 0, 1, 3)
+        ser_lay.addLayout(cal_lay2, 2, 0, 1, 4)
 
         # USB电压系数校准
         cal_lay3 = QHBoxLayout()
@@ -2287,37 +2290,59 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         logger.info("[GPIB-ZERO] 零位偏移已重置为0")
         QMessageBox.information(self, "已重置", "电流零位偏移已清除")
 
-    def _calibrate_usb_zero(self):
-        """USB电压/电流零位校准：空载时测量偏置"""
-        global _usb_current_offset, _usb_v_zero
+    def _calibrate_usb_c_zero(self):
+        """USB电流零位校准：电源开启空载时测量"""
+        global _usb_current_offset
         if not USB_OK or not _libusb_dev:
             QMessageBox.warning(self, "提示", "请先连接USB设备")
             return
-        ret = QMessageBox.question(self, "零位校准",
+        ret = QMessageBox.question(self, "电流零位校准",
             "请确保负载已断开但电源输出开启(>0V)，\n"
-            "然后点击「是」开始测量零位（将扣除设备自身功耗）。",
+            "点击「是」测量设备自身功耗作为零位。",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ret != QMessageBox.Yes:
             return
-        v_samples, c_samples = [], []
+        samples = []
         for i in range(10):
             sample = s_readline()
             if sample:
                 v_raw, c_raw = sample
-                v_samples.append(v_raw)
-                c_samples.append(c_raw)
+                samples.append(c_raw)
             time.sleep(0.05)
-        if v_samples and c_samples:
-            v_off = round(sum(v_samples) / len(v_samples))
-            c_off = round(sum(c_samples) / len(c_samples))
-            _usb_v_zero = v_off
+        if samples:
+            c_off = round(sum(samples) / len(samples))
             _usb_current_offset = c_off
-            self.lb_usb_offset.setText(f"零位: V={v_off}raw C={c_off}raw")
-            logger.info(f"[USB-ZERO] 校准完成: V_zero={v_off} C_zero={c_off} (共{len(v_samples)}个样本)")
-            QMessageBox.information(self, "完成",
-                f"电压零位: {v_off} raw\n"
-                f"电流零位: {c_off} raw ({c_off/9.9:.1f}μA)\n"
-                f"后续测量将自动减去该值")
+            self.lb_usb_offset.setText(f"零位: V={_usb_v_zero}raw C={c_off}raw")
+            logger.info(f"[USB-CZERO] 电流零位: {c_off} raw")
+            QMessageBox.information(self, "完成", f"电流零位: {c_off} raw")
+        else:
+            QMessageBox.warning(self, "失败", "未能读取到数据")
+
+    def _calibrate_usb_v_zero(self):
+        """USB电压零位校准：电源关闭0V时测量"""
+        global _usb_v_zero
+        if not USB_OK or not _libusb_dev:
+            QMessageBox.warning(self, "提示", "请先连接USB设备")
+            return
+        ret = QMessageBox.question(self, "电压零位校准",
+            "请确保电源输出关闭(0V)，\n"
+            "点击「是」测量电压零位。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ret != QMessageBox.Yes:
+            return
+        samples = []
+        for i in range(10):
+            sample = s_readline()
+            if sample:
+                v_raw, c_raw = sample
+                samples.append(v_raw)
+            time.sleep(0.05)
+        if samples:
+            v_off = round(sum(samples) / len(samples))
+            _usb_v_zero = v_off
+            self.lb_usb_offset.setText(f"零位: V={v_off}raw C={_usb_current_offset}raw")
+            logger.info(f"[USB-VZERO] 电压零位: {v_off} raw")
+            QMessageBox.information(self, "完成", f"电压零位: {v_off} raw")
         else:
             QMessageBox.warning(self, "失败", "未能读取到数据")
 
