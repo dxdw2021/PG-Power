@@ -1,4 +1,4 @@
-import sys, os, ctypes, threading, platform, time, csv, logging, json, random
+import sys, os, ctypes, threading, platform, time, csv, logging, json, random, bisect
 from datetime import datetime, timedelta
 from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
 
@@ -212,6 +212,7 @@ _v_raw_history = []
 _prev_hist_v_mid = 0     # 上次历史中位数（基线漂移检测）
 _packet_dump_cnt = 0     # 已dump的异常包数量
 _adc_range = 1           # 当前ADC量程 (1/2/3)
+_last_good_c_med = 0     # 上次稳定电流中位数（跳变限幅用）
 
 
 def _detect_range(v):
@@ -221,12 +222,19 @@ def _detect_range(v):
     if 48000 < v < 50000: return 3
     return 0
 
+def _find_index(ts, x):
+    """二分查找时间戳ts中最接近x的索引"""
+    i = bisect.bisect_left(ts, x)
+    if i >= len(ts): return len(ts) - 1
+    if i == 0: return 0
+    return i if abs(ts[i] - x) < abs(ts[i-1] - x) else i - 1
+
 
 def s_readline():
     """Read one 64-byte USB packet, return filtered (v_raw, c_raw)"""
     global _debug_cnt, _debug_v_cnt, _v_filtered, _sample_cnt
     global _consec_v_filtered, _last_v_filtered_ts
-    global _c_raw_history, _v_raw_history, _prev_hist_v_mid, _packet_dump_cnt, _adc_range
+    global _c_raw_history, _v_raw_history, _prev_hist_v_mid, _packet_dump_cnt, _adc_range, _last_good_c_med
     if not _libusb_dev or _libusb_ep_in is None:
         return None
     try:
@@ -261,6 +269,16 @@ def s_readline():
     mid = len(vs) // 2
     v_med = vs[mid]
     c_med = cs[mid]
+
+    # ---- 电流跳变限幅: 抑制ADC漂移导致的尖峰 ----
+    # 仅当已建立稳定基线(>100)且当前值偏离>5倍时才替换（防止缓慢漂移被锁定）
+    if _last_good_c_med > 100 and c_med > 100:
+        if c_med > _last_good_c_med * 5 or c_med < _last_good_c_med / 5:
+            logger.debug(f"[LIMITER] {c_med}→{_last_good_c_med}")
+            c_med = _last_good_c_med
+    # 仅当当前值合理(>100)时才更新基线，防止被0/1等异常值污染
+    if c_med > 100:
+        _last_good_c_med = c_med
 
     # ===== ADC量程检测与归一化 =====
     # 将不同量程下的raw值归一化到量程1，使后续换算系数(v/4044, c/9.9)始终正确
@@ -1173,7 +1191,7 @@ class Main(QMainWindow):
             mp = self.pm.plotItem.vb.mapSceneToView(pos)
             self.vm.setPos(mp.x()); self.hm.setPos(mp.y())
             if self.ts:
-                i = max(0, min(int(mp.x()), len(self.ts) - 1))
+                i = _find_index(self.ts, mp.x())
                 v, c, p = self.vs[i], self.cs[i], self.ps[i]
                 t_str = self._format_tooltip_time(mp.x())
                 c_str = f"{c/1000:.3f} mA"
@@ -1187,7 +1205,7 @@ class Main(QMainWindow):
             mp = self.pc.plotItem.vb.mapSceneToView(pos)
             self.vc.setPos(mp.x()); self.hc.setPos(mp.y())
             if self.ts:
-                i = max(0, min(int(mp.x()), len(self.ts) - 1))
+                i = _find_index(self.ts, mp.x())
                 v, c, p = self.vs[i], self.cs[i], self.ps[i]
                 t_str = self._format_tooltip_time(mp.x())
                 c_str = f"{c/1000:.3f} mA"
@@ -1201,7 +1219,7 @@ class Main(QMainWindow):
             mp = self.pv.plotItem.vb.mapSceneToView(pos)
             self.vvl.setPos(mp.x()); self.hvl.setPos(mp.y())
             if self.ts:
-                i = max(0, min(int(mp.x()), len(self.ts) - 1))
+                i = _find_index(self.ts, mp.x())
                 v = self.vs[i]
                 t_str = self._format_tooltip_time(mp.x())
                 self.xvl.setText(f" {t_str}  {v:.3f}V ")
@@ -2292,7 +2310,8 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
 
     def _calibrate_usb_c_zero(self):
         """USB电流零位校准：电源开启空载时测量"""
-        global _usb_current_offset
+        global _usb_current_offset, _last_good_c_med
+        _last_good_c_med = 0  # 校准前重置限幅器基线
         if not USB_OK or not _libusb_dev:
             QMessageBox.warning(self, "提示", "请先连接USB设备")
             return
@@ -2403,6 +2422,7 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
             self.ts.clear(); self.vs.clear(); self.cs.clear(); self.ps.clear()
             self.e_mwh=0; self.max_c=0; self.min_c=float("inf"); self.save_count=0
             self.collecting=True; self.t0=time.time(); self.t0_abs=datetime.now(); self.phi=0; self.pe=0
+            global _last_good_c_med; _last_good_c_med = 0  # 开始采集时重置限幅器基线
             # Set time axis start time
             if self.time_mode:
                 if hasattr(self, 'time_axis_m'): self.time_axis_m.setStartTime(self.t0_abs)
