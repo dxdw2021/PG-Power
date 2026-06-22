@@ -173,6 +173,7 @@ _sample_cnt = 0
 _c_raw_history = []  # size: 50
 _v_raw_history = []  # size: 50
 _prev_hist_v_mid = 0  # 上次历史中位数（基线漂移/负载切换检测）
+_last_good_c_med = 0  # 上次稳定电流中位数（跳变限幅用）
 
 
 def read_packet():
@@ -240,11 +241,19 @@ def read_packet():
         c_med //= cur_range
         logger.debug(f"[IOT-RANGE] 量程{cur_range}归一化: v={v_med} c={c_med}")
 
+    # ---- 电流跳变限幅: 抑制ADC漂移导致的尖峰 ----
+    global _last_good_c_med
+    if _last_good_c_med > 0 and c_med > 100:
+        if c_med > _last_good_c_med * 3 or c_med < _last_good_c_med / 3:
+            logger.debug(f"[LIMITER] {c_med}→{_last_good_c_med} (变化{c_med/_last_good_c_med:.1f}x)")
+            c_med = _last_good_c_med
+    _last_good_c_med = c_med
+
     # ---- 负载切换检测: 电流突变时重置所有历史基线 ----
     # ⚡ 必须放在 OUTLIER/V-FILTER 之前，否则负载数据会被误拦截
     # ⏱ 每 1 秒最多重置一次，避免放电过渡期连续触发
     _now = time.time()
-    if _now - getattr(read_packet, '_last_reset_time', 0) < 1.0:
+    if _now - getattr(read_packet, '_last_reset_time', 0) < 3.0:
         pass  # 冷却期内跳过
     elif len(_c_raw_history) >= 5 and len(_v_raw_history) >= 5:
         c_hist_mid = sorted(_c_raw_history)[len(_c_raw_history) // 2]

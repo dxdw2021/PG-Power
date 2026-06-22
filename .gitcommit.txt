@@ -1,0 +1,12 @@
+feat(test): 阶梯升降波形 — 5mA步进上升/每秒5mA缓慢下降
+
+### 测试模式波形
+- 待机(0.3mA, 3s) -> 阶梯上升(0->1000mA, 5mA步进, 100ms/步, 20s)
+- 峰值保持(1000mA, 2s) -> 阶梯下降(1000->0mA, 5mA步进, 1s/步, 200s)
+- 待机(0.3mA, 3s)
+- 总计约 4 分钟完整负载波形
+
+### 其他
+- 用 _ph 临时列表程序化生成 400+ 相位，避免手动硬编码
+
+Co-Authored-By: AtomCode (deepseek-v4-flash) <noreply@atomgit.com>
