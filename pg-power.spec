@@ -11,6 +11,16 @@ block_cipher = None
 
 PROJECT_DIR = os.getcwd()
 
+# 从 main.py 读取版本号
+APP_VERSION = "0.0.0"
+_main_py = os.path.join(PROJECT_DIR, 'main.py')
+if os.path.exists(_main_py):
+    with open(_main_py, 'r', encoding='utf-8') as _f:
+        for _line in _f:
+            if _line.strip().startswith('APP_VERSION'):
+                APP_VERSION = _line.split('"')[1] if '"' in _line else _line.split("'")[1]
+                break
+
 pyqt5_dir = os.path.join(
     PROJECT_DIR,
     "venv", "Lib", "site-packages", "PyQt5"
@@ -54,8 +64,16 @@ libusb_datas = [(libusb_dll, '.')] if os.path.exists(libusb_dll) else []
 icon_ico = os.path.join(PROJECT_DIR, 'icon.ico')
 icon_datas = [(icon_ico, '.')] if os.path.exists(icon_ico) else []
 
+# Icons 目录
+icons_dir = os.path.join(PROJECT_DIR, 'Icons')
+icons_datas = []
+if os.path.isdir(icons_dir):
+    for f in os.listdir(icons_dir):
+        if f.lower().endswith('.png'):
+            icons_datas.append((os.path.join(icons_dir, f), 'Icons'))
+
 # 合并所有 data
-all_datas = qt_datas + pyd_datas + ni4882_datas + libusb_datas + icon_datas
+all_datas = qt_datas + pyd_datas + ni4882_datas + libusb_datas + icon_datas + icons_datas
 all_binaries = qt_binaries
 
 # ---------- 配置 Analysis ----------
@@ -124,7 +142,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='PG-Power',
+    name=f'PG-Power_v{APP_VERSION}',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

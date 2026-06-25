@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 chcp 65001 >nul
 cd /d "%~dp0"
 echo ========================================
@@ -27,12 +27,12 @@ echo.
 echo [2/3] 打包完成！
 echo.
 
-echo [3/3] 输出: %%~dp0dist\PG-Power.exe
+echo [3/3] 输出: %%~dp0dist\PG-Power_v*.exe
 echo.
 echo ========================================
 echo   打包成功！
 echo.
-echo   单文件版: dist\PG-Power.exe (66MB)
+echo   单文件版: dist\PG-Power_v*.exe
 echo   复制到目标电脑即可运行。
 echo ========================================
 pause
