@@ -3,7 +3,7 @@ import updater
 from datetime import datetime, timedelta
 from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
 
-APP_VERSION = "2.0.10"
+APP_VERSION = "2.0.11"
 REPORT_VERSION = "2.0.1"
 
 def set_dark_titlebar(window, enable=True):
@@ -48,8 +48,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
     QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QGroupBox, QMessageBox, QFileDialog,
     QTabWidget, QTextEdit, QSplitter, QFrame, QToolBar, QAction, QComboBox, QGridLayout,
     QSlider, QStatusBar, QProgressBar, QLineEdit, QScrollArea, QCheckBox, QRadioButton)
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QSettings, pyqtSignal, QPropertyAnimation, QEasingCurve, pyqtProperty
-from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QRadialGradient
+from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QSettings, pyqtSignal, QPropertyAnimation, QEasingCurve, pyqtProperty, QUrl
+from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QRadialGradient, QDesktopServices
 import pyqtgraph as pg
 
 # ===== GPIB =====
@@ -3332,20 +3332,53 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         self.statusBar().showMessage("正在检查更新...")
         self._update_thread.start()
 
+    def _open_in_browser(self, url):
+        """在系统默认浏览器中打开 URL"""
+        try:
+            QDesktopServices.openUrl(QUrl(url))
+        except Exception as e:
+            logger.warning(f"打开浏览器失败: {e}")
+
     def _on_update_checked(self, result, show_dialog):
         self.statusBar().showMessage("就绪")
         if result.get("available"):
             new_ver = result["latest"]
-            msg = "发现新版本: " + new_ver + " (当前 " + APP_VERSION + ")\n\n"
-            msg += "来源: " + str(result.get("source")) + "\n"
-            msg += "下载地址: " + str(result.get("exe_url")) + "\n\n"
+            exe_url = result["exe_url"]
+            # 富文本: 下载地址可点击
+            msg_html = (
+                f"<h3 style='margin:0 0 8px 0'>发现新版本: <b>{new_ver}</b> (当前 {APP_VERSION})</h3>"
+                f"<p style='margin:4px 0'>来源: {result.get('source', '-')}</p>"
+                f"<p style='margin:4px 0'>下载地址: "
+                f"<a href='{exe_url}' style='color:#89b4fa;text-decoration:underline'>{exe_url}</a></p>"
+            )
             if result.get("notes"):
-                msg += "更新说明:\n" + str(result['notes'][:500]) + "\n\n"
-            msg += "是否现在下载?"
-            ret = QMessageBox.question(self, "发现新版本", msg,
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-            if ret == QMessageBox.Yes:
-                self._download_and_apply(result["exe_url"], new_ver)
+                msg_html += f"<p style='margin:8px 0;padding:6px;background:#313244;border-radius:4px'>" \
+                           f"<b>更新说明:</b><br>{str(result['notes'][:800]).replace(chr(10), '<br>')}</p>"
+
+            dlg = QMessageBox(self)
+            dlg.setWindowTitle("发现新版本")
+            dlg.setText(msg_html)
+            dlg.setTextFormat(Qt.RichText)
+            dlg.setIcon(QMessageBox.Information)
+            btn_download = dlg.addButton("立即下载", QMessageBox.AcceptRole)
+            btn_browser = dlg.addButton("在浏览器下载", QMessageBox.ActionRole)
+            btn_later = dlg.addButton("稍后再说", QMessageBox.RejectRole)
+            dlg.setDefaultButton(btn_download)
+            dlg.exec_()
+
+            clicked = dlg.clickedButton()
+            if clicked == btn_download:
+                logger.info(f"用户点立即下载: {exe_url}")
+                try:
+                    self._download_and_apply(exe_url, new_ver)
+                except Exception as e:
+                    logger.error(f"下载启动异常: {e}")
+                    QMessageBox.critical(self, "下载失败",
+                        f"启动下载时出错: {e}\n\n建议点「在浏览器下载」")
+                    self._open_in_browser(exe_url)
+            elif clicked == btn_browser:
+                logger.info(f"用户选择浏览器下载: {exe_url}")
+                self._open_in_browser(exe_url)
         else:
             if show_dialog:
                 QMessageBox.information(self, "检查更新",
@@ -3356,21 +3389,26 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         import tempfile, os as _os
         from PyQt5.QtCore import QThread, pyqtSignal as _sig
 
+        logger.info(f"[更新] 开始下载 v{new_ver}, URL={exe_url}")
+
         # 带进度条的下载对话框
         self._update_dialog = QProgressDialog(
             f"正在下载 PG-Power {new_ver} ...", "取消", 0, 100, self)
         self._update_dialog.setWindowTitle("下载更新")
         self._update_dialog.setWindowModality(Qt.WindowModal)
-        self._update_dialog.setMinimumDuration(0)        # 立即显示
-        self._update_dialog.setAutoClose(False)          # 下载完不自动关, 我们自己关
+        self._update_dialog.setMinimumDuration(0)        # 立即显示, 不等
+        self._update_dialog.setAutoClose(False)          # 下载完不自动关
         self._update_dialog.setAutoReset(False)
         self._update_dialog.setValue(0)
         self._update_dialog.setLabelText("连接中...")
-        self._update_dialog.setCancelButton(None)         # 暂不支持取消
+        self._update_dialog.setRange(0, 0)               # 先脉冲模式, 拿到 total 再切
         self._update_dialog.show()
         QApplication.processEvents()
+        logger.info("[更新] QProgressDialog 已显示")
 
         dest = _os.path.join(tempfile.gettempdir(), f"PG-Power_v{new_ver}.exe")
+        logger.info(f"[更新] 目标路径: {dest}")
+
         class DlThread(QThread):
             done = _sig(object)
             progress = _sig(int, int)   # received, total
@@ -3379,54 +3417,84 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
                 self.url, self.dst = url, dst
                 self._cancelled = False
             def run(self):
-                def _cb(r, t):
-                    if not self._cancelled:
-                        self.progress.emit(r, t)
-                ok, info = updater.download_exe(self.url, self.dst, progress_cb=_cb)
-                self.done.emit((ok, info, self.dst))
+                logger.info(f"[更新线程] 启动下载: {self.url}")
+                try:
+                    def _cb(r, t):
+                        if not self._cancelled:
+                            self.progress.emit(int(r), int(t))
+                    ok, info = updater.download_exe(self.url, self.dst, progress_cb=_cb)
+                    logger.info(f"[更新线程] 下载完成 ok={ok}, info={str(info)[:100] if ok else info}")
+                    self.done.emit((ok, info, self.dst))
+                except Exception as e:
+                    logger.exception(f"[更新线程] 未捕获异常: {e}")
+                    self.done.emit((False, str(e), self.dst))
             def cancel(self):
                 self._cancelled = True
 
-        self._dl_thread = DlThread(exe_url, dest)
-        self._dl_thread.progress.connect(
-            lambda r, tot, nv=new_ver: self._on_update_progress(r, tot, nv))
-        self._dl_thread.done.connect(
-            lambda res: self._on_update_downloaded(res, new_ver))
-        self._update_dialog.canceled.connect(self._dl_thread.cancel)
-        self._dl_thread.start()
+        try:
+            self._dl_thread = DlThread(exe_url, dest)
+            self._dl_thread.progress.connect(
+                lambda r, tot, nv=new_ver: self._on_update_progress(r, tot, nv))
+            self._dl_thread.done.connect(
+                lambda res: self._on_update_downloaded(res, new_ver, exe_url))
+            self._update_dialog.canceled.connect(self._dl_thread.cancel)
+            self._dl_thread.start()
+            logger.info("[更新] 下载线程已启动")
+        except Exception as e:
+            logger.exception(f"[更新] 启动下载线程失败: {e}")
+            self._update_dialog.close()
+            QMessageBox.critical(self, "下载启动失败",
+                f"启动下载线程时出错:\n{e}\n\n建议点「在浏览器下载」")
+            self._open_in_browser(exe_url)
 
     def _on_update_progress(self, received, total, new_ver):
-        if total and total > 0:
-            pct = int(received * 100 / total)
-            self._update_dialog.setRange(0, 100)
-            self._update_dialog.setValue(pct)
-            self._update_dialog.setLabelText(
-                f"正在下载 PG-Power v{new_ver} ... {received//1024//1024}/{total//1024//1024} MB ({pct}%)")
-        else:
-            self._update_dialog.setRange(0, 0)  # 脉冲进度
-            self._update_dialog.setLabelText(
-                f"正在下载 PG-Power v{new_ver} ... 已下载 {received//1024//1024} MB")
-        QApplication.processEvents()
+        try:
+            if total and total > 0:
+                pct = int(received * 100 / total)
+                self._update_dialog.setRange(0, 100)
+                self._update_dialog.setValue(pct)
+                self._update_dialog.setLabelText(
+                    f"正在下载 PG-Power v{new_ver} ... {received//1024//1024}/{total//1024//1024} MB ({pct}%)")
+            else:
+                self._update_dialog.setRange(0, 0)  # 脉冲进度
+                self._update_dialog.setLabelText(
+                    f"正在下载 PG-Power v{new_ver} ... 已下载 {max(received//1024//1024, 0)} MB")
+            # 每 5% 或首次打一下日志
+            if total and total > 0 and received % max(1, total // 20) < 65536:
+                logger.info(f"[更新进度] {received//1024//1024}/{total//1024//1024}MB "
+                            f"({int(received*100/total)}%)")
+            QApplication.processEvents()
+        except Exception as e:
+            logger.warning(f"[更新进度] 异常: {e}")
 
-    def _on_update_downloaded(self, res, new_ver):
-        self._update_dialog.close()
-        ok, info, dest = res
-        if not ok:
-            QMessageBox.warning(self, "下载失败", f"下载出错: {info}")
-            return
-        ret = QMessageBox.question(self, "准备更新",
-            "新版本已下载到: " + str(dest) + "\n\n"
-            "点击 Yes 将关闭程序并替换为 v" + str(new_ver) + "。",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-        if ret != QMessageBox.Yes:
-            return
-        cur_exe = sys.executable if getattr(sys, "frozen", False) else __file__
-        need_restart, bat = updater.apply_update(dest, cur_exe)
-        if not need_restart:
-            QMessageBox.information(self, "更新完成", "已更新到最新版本, 请重新启动程序。")
-            return
-        self.close()
-        QApplication.instance().quit()
+    def _on_update_downloaded(self, res, new_ver, exe_url=""):
+        try:
+            self._update_dialog.close()
+            ok, info, dest = res
+            if not ok:
+                logger.error(f"[更新] 下载失败: {info}")
+                ret = QMessageBox.warning(self, "下载失败",
+                    f"下载出错: {info}\n\n是否在浏览器中打开下载地址?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                if ret == QMessageBox.Yes:
+                    self._open_in_browser(exe_url)
+                return
+            logger.info(f"[更新] 下载成功: {dest} ({info} 字节)")
+            ret = QMessageBox.question(self, "准备更新",
+                f"新版本已下载到:\n{dest}\n\n"
+                f"点击 Yes 将关闭程序并替换为 v{new_ver}。",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if ret != QMessageBox.Yes:
+                return
+            cur_exe = sys.executable if getattr(sys, "frozen", False) else __file__
+            need_restart, bat = updater.apply_update(dest, cur_exe)
+            if not need_restart:
+                QMessageBox.information(self, "更新完成", "已更新到最新版本, 请重新启动程序。")
+                return
+            self.close()
+            QApplication.instance().quit()
+        except Exception as e:
+            logger.exception(f"[更新] 下载后处理异常: {e}")
 if __name__=="__main__":
     import ctypes
     try:
