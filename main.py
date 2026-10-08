@@ -3298,22 +3298,6 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         else: s_close()
         self._save_settings(); e.accept()
 
-if __name__=="__main__":
-    import ctypes
-    try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PG-Power")
-    except Exception:
-        pass
-    app=QApplication(sys.argv)
-    app.setStyle("Fusion")
-    # Detect screen resolution for theme
-    screen = app.primaryScreen()
-    is_low_res = screen and (screen.availableGeometry().width() < 1280 or screen.availableGeometry().height() < 800)
-    dark, light = get_themes(is_low_res)
-    app.setStyleSheet(dark)
-    ico=os.path.join(sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)),"icon.ico")
-    if os.path.exists(ico): app.setWindowIcon(QIcon(ico))
-    w=Main(); w.show(); sys.exit(app.exec_())
 
     # ===== 在线更新 =====
     def _check_update_ui(self):
@@ -3343,11 +3327,11 @@ if __name__=="__main__":
         self.statusBar().showMessage("就绪")
         if result.get("available"):
             new_ver = result["latest"]
-            msg = (f"发现新版本: {new_ver} (当前 {APP_VERSION})\n\n"
-                   f"来源: {result.get('source')}\n"
-                   f"下载地址: {result.get('exe_url')}\n\n")
+            msg = "发现新版本: " + new_ver + " (当前 " + APP_VERSION + ")\n\n"
+            msg += "来源: " + str(result.get("source")) + "\n"
+            msg += "下载地址: " + str(result.get("exe_url")) + "\n\n"
             if result.get("notes"):
-                msg += f"更新说明:\n{result['notes'][:500]}\n\n"
+                msg += "更新说明:\n" + str(result['notes'][:500]) + "\n\n"
             msg += "是否现在下载?"
             ret = QMessageBox.question(self, "发现新版本", msg,
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
@@ -3391,7 +3375,8 @@ if __name__=="__main__":
             QMessageBox.warning(self, "下载失败", f"下载出错: {info}")
             return
         ret = QMessageBox.question(self, "准备更新",
-            f"新版本已下载到: {dest}\n\n",
+            "新版本已下载到: " + str(dest) + "\n\n"
+            "点击 Yes 将关闭程序并替换为 v" + str(new_ver) + "。",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if ret != QMessageBox.Yes:
             return
@@ -3402,3 +3387,20 @@ if __name__=="__main__":
             return
         self.close()
         QApplication.instance().quit()
+if __name__=="__main__":
+    import ctypes
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PG-Power")
+    except Exception:
+        pass
+    app=QApplication(sys.argv)
+    app.setStyle("Fusion")
+    # Detect screen resolution for theme
+    screen = app.primaryScreen()
+    is_low_res = screen and (screen.availableGeometry().width() < 1280 or screen.availableGeometry().height() < 800)
+    dark, light = get_themes(is_low_res)
+    app.setStyleSheet(dark)
+    ico=os.path.join(sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)),"icon.ico")
+    if os.path.exists(ico): app.setWindowIcon(QIcon(ico))
+    w=Main(); w.show(); sys.exit(app.exec_())
+

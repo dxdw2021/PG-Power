@@ -1,0 +1,3 @@
+chore: init project instructions (.atomcode.md)
+
+Co-Authored-By: AtomCode (deepseek-v4-flash) <noreply@atomgit.com>

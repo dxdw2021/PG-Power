@@ -1,0 +1,78 @@
+2026-08-05 16:12:04,705 [INFO] 日志: D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\logs\pg_power_20260805_161204.log
+2026-08-05 16:12:05,018 [WARNING] GPIB: Could not find module 'D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\ni4882.dll' (or one of its dependencies). Try using the full path with constructor syntax.
+2026-08-05 16:12:08,493 [INFO] USB设备已连接: VID=1209 PID=7301 EP_IN=0x81 EP_OUT=0x02
+2026-08-05 16:12:11,776 [INFO] 采集启动: mode=luatos, USB_OK=True, dev=DEVICE ID 1209:7301 on Bus 001 Address 007 =================
+ bLength                :   0x12 (18 bytes)
+ bDescriptorType        :    0x1 Device
+ bcdUSB                 :  0x210 USB 2.1
+ bDeviceClass           :    0x0 Specified at interface
+ bDeviceSubClass        :    0x0
+ bDeviceProtocol        :    0x0
+ bMaxPacketSize0        :   0x40 (64 bytes)
+ idVendor               : 0x1209
+ idProduct              : 0x7301
+ bcdDevice              :  0x100 Device 1.0
+ iManufacturer          :    0x1 上海合宙通信有限公司
+ iProduct               :    0x4 IotPower-cc
+ iSerialNumber          :    0x3 CC-1A604F530
+ bNumConfigurations     :    0x1
+  CONFIGURATION 1: 200 mA ==================================
+   bLength              :    0x9 (9 bytes)
+   bDescriptorType      :    0x2 Configuration
+   wTotalLength         :   0x20 (32 bytes)
+   bNumInterfaces       :    0x1
+   bConfigurationValue  :    0x1
+   iConfiguration       :    0x0 
+   bmAttributes         :   0x80 Bus Powered
+   bMaxPower            :   0x64 (200 mA)
+    INTERFACE 0: Vendor Specific ===========================
+     bLength            :    0x9 (9 bytes)
+     bDescriptorType    :    0x4 Interface
+     bInterfaceNumber   :    0x0
+     bAlternateSetting  :    0x0
+     bNumEndpoints      :    0x2
+     bInterfaceClass    :   0xff Vendor Specific
+     bInterfaceSubClass :   0xff
+     bInterfaceProtocol :    0x0
+     iInterface         :    0x4 IotPower-cc
+      ENDPOINT 0x81: Bulk IN ===============================
+       bLength          :    0x7 (7 bytes)
+       bDescriptorType  :    0x5 Endpoint
+       bEndpointAddress :   0x81 IN
+       bmAttributes     :    0x2 Bulk
+       wMaxPacketSize   :   0x40 (64 bytes)
+       bInterval        :    0x1
+      ENDPOINT 0x2: Bulk OUT ===============================
+       bLength          :    0x7 (7 bytes)
+       bDescriptorType  :    0x5 Endpoint
+       bEndpointAddress :    0x2 OUT
+       bmAttributes     :    0x2 Bulk
+       wMaxPacketSize   :   0x40 (64 bytes)
+       bInterval        :    0x1
+2026-08-05 16:12:11,777 [INFO] _loop线程已启动
+2026-08-05 16:12:11,778 [INFO] 采集已启动
+2026-08-05 16:12:11,783 [INFO] [ADC-RANGE] 电压量程 1→3，raw已归一化到量程1
+2026-08-05 16:12:11,783 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-05 16:12:11,783 [INFO] #1 v_raw=16411 c_raw=448 → V=2.730 C=0.0uA
+2026-08-05 16:12:11,854 [INFO] #2 v_raw=16411 c_raw=448 → V=2.730 C=0.0uA
+2026-08-05 16:12:11,925 [INFO] #3 v_raw=16412 c_raw=448 → V=2.730 C=0.0uA
+2026-08-05 16:12:13,294 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=21991(→2221.3μA) 历史c_mid=448(→45.3μA) 电流变化=4809%
+2026-08-05 16:12:13,652 [DEBUG] [LIMITER-COOLDOWN] 冷却结束，建立新基线 c_med=447
+2026-08-05 16:12:16,677 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=22034(→2225.7μA) 历史c_mid=448(→45.3μA) 电流变化=4818%
+2026-08-05 16:12:17,032 [DEBUG] [LIMITER-COOLDOWN] 冷却结束，建立新基线 c_med=447
+2026-08-05 16:12:17,247 [DEBUG] [LIMITER] 22041→448 (变化49.2x)
+2026-08-05 16:12:17,817 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=22048(→2227.1μA) 历史c_mid=448(→45.3μA) 电流变化=4821%
+2026-08-05 16:12:18,183 [DEBUG] [LIMITER-COOLDOWN] 冷却结束，建立新基线 c_med=448
+2026-08-05 16:12:21,206 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=22090(→2231.3μA) 历史c_mid=448(→45.3μA) 电流变化=4831%
+2026-08-05 16:12:21,563 [DEBUG] [LIMITER-COOLDOWN] 冷却结束，建立新基线 c_med=448
+2026-08-05 16:12:21,777 [DEBUG] [LIMITER] 22097→448 (变化49.3x)
+2026-08-05 16:12:22,346 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=22105(→2232.8μA) 历史c_mid=448(→45.3μA) 电流变化=4834%
+2026-08-05 16:12:22,704 [DEBUG] [LIMITER-COOLDOWN] 冷却结束，建立新基线 c_med=448
+2026-08-05 16:12:22,918 [DEBUG] [LIMITER] 22112→448 (变化49.4x)
+2026-08-05 16:12:26,084 [INFO] #200 v_raw=16412 c_raw=448 → V=2.730 C=0.0uA
+2026-08-05 16:12:26,156 [DEBUG] [V-FILTER-STAT] sample=200 v过滤=0(0.0%) c过滤≈0 v范围[16411,16411,16412]
+2026-08-05 16:12:26,301 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=22154(→2237.8μA) 历史c_mid=448(→45.3μA) 电流变化=4845%
+2026-08-05 16:12:26,655 [DEBUG] [LIMITER-COOLDOWN] 冷却结束，建立新基线 c_med=448
+2026-08-05 16:12:26,872 [DEBUG] [LIMITER] 22161→448 (变化49.5x)
+2026-08-05 16:12:27,694 [INFO] 采集已停止
+2026-08-05 16:12:28,864 [INFO] USB设备已断开
