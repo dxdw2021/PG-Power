@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.pyz
 
 # 虚拟环境
 venv/
@@ -15,6 +16,9 @@ venv/
 
 # AtomCode 配置
 .atomcode/
+
+# 临时测试文件
+test_qt.py
 
 # 系统文件
 Thumbs.db
