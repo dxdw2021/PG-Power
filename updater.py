@@ -33,7 +33,7 @@ def _http_get_json(url, headers=None, timeout=UPDATE_CHECK_TIMEOUT):
             hdrs.update(headers)
         req = Request(url, headers=hdrs)
         with urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            return json.loads(resp.read().decode("utf-8-sig"))
     except (URLError, HTTPError, json.JSONDecodeError, TimeoutError, OSError) as e:
         logger.debug(f"[updater] GET {url} 失败: {e}")
         return None

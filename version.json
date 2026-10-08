@@ -1,5 +1,5 @@
-﻿{
-  "version": "2.0.10",
-  "exe_url": "https://github.com/dxdw2021/PG-Power/releases/download/v2.0.10/PG-Power_v2.0.10.exe",
-  "notes": "v2.0.10: 下载进度条 + 启动自动检查更新\n- 启动后延迟3秒自动后台检查更新\n- 下载时显示实时进度条 (MB/百分比)\n- 手动菜单「检查更新」仍可用\n\n用于验证在线更新下载进度条功能"
+{
+  "version": "2.0.11",
+  "exe_url": "https://github.com/dxdw2021/PG-Power/releases/download/v2.0.11/PG-Power_v2.0.11.exe",
+  "notes": "v2.0.11: 在线更新进度条修复 + 下载地址可点击 + 浏览器下载兜底\n\n- QProgressDialog 全方位加日志和异常保护\n- 下载地址富文本可点击\n- 新增「在浏览器下载」按钮兜底\n- 下载失败自动弹浏览器"
 }
