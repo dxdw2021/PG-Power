@@ -16,13 +16,22 @@ PG-Power 是一款宠物定位器测试工具（PyQt5 + Python），支持 USB I
 
 ### Step 2 — 打包 exe
 ```powershell
-# 清理旧产物
-Remove-Item dist, build -Recurse -Force -ErrorAction SilentlyContinue
+# 只清 build/ (PyInstaller 临时目录), 保留 dist/ 里的旧版本!
+Remove-Item build -Recurse -Force -ErrorAction SilentlyContinue
 
-# 重新打包 (单文件, 无控制台窗口)
+# 重新打包 (单文件, 无控制台窗口, spec 里已按版本号命名)
 venv\Scripts\pyinstaller pg-power.spec --noconfirm
+
+# 自动归档到 releases/ (保留所有历史版本, 不覆盖已存在的)
+New-Item -ItemType Directory -Force releases | Out-Null
+$new_exe = Get-ChildItem dist\PG-Power_v*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Copy-Item $new_exe.FullName "releases\$($new_exe.Name)" -Force
 ```
-产物: `dist\PG-Power_vX.Y.Z.exe`（约 70MB）
+产物:
+- `dist\PG-Power_vX.Y.Z.exe`（当前版本, 70MB）
+- `releases\PG-Power_v*.exe`（所有历史版本归档）
+
+**绝对不要** `Remove-Item dist, build -Recurse` — 会把 dist 里所有历史版本一起删掉!
 
 ### Step 3 — 提交 + 打 tag + 推送（双仓库同步）
 ```powershell
