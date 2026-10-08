@@ -77,10 +77,25 @@ def _discover_asset_from_api(data):
     return None
 
 
+_last_config = None
+
+def _default_static_candidates():
+    """基于 github_repo 自动推导几个 CDN 版本文件地址, 国内可用"""
+    cfg = _last_config or {}
+    gh = (cfg.get("github_repo") or "").strip()
+    urls = []
+    if gh:
+        urls.append(f"https://cdn.jsdelivr.net/gh/{gh}@master/version.json")
+        urls.append(f"https://fastly.jsdelivr.net/gh/{gh}@master/version.json")
+        urls.append(f"https://raw.fastgit.org/{gh}/master/version.json")
+        urls.append(f"https://raw.githubusercontent.com/{gh}/master/version.json")
+    return urls
+
 def check_update(current_version, config):
     result = {"available": False, "latest": None, "exe_url": None,
               "notes": None, "source": None, "error": None}
     sources = []
+    global _last_config; _last_config = config
     github_repo = (config or {}).get("github_repo", "").strip()
     gitlab_repo = (config or {}).get("gitlab_repo", "").strip()
     static_url = (config or {}).get("static_url", "").strip()
@@ -90,6 +105,9 @@ def check_update(current_version, config):
         sources.append(("gitlab", lambda: _check_gitlab(gitlab_repo)))
     if static_url:
         sources.append(("static", lambda: _check_static(static_url)))
+    # 根据 github_repo 自动推导 CDN 静态版本 (用户无需手动配置)
+    for au in _default_static_candidates():
+        sources.append((f"static-auto({au.split('/')[2]})", lambda u=au: _check_static(u)))
     if not sources:
         result["error"] = "未配置任何发布源 (github_repo / gitlab_repo / static_url 均为空)"
         return result
