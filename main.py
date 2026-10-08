@@ -3,7 +3,7 @@ import updater
 from datetime import datetime, timedelta
 from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
 
-APP_VERSION = "2.0.7"
+APP_VERSION = "2.0.8"
 REPORT_VERSION = "2.0.1"
 
 def set_dark_titlebar(window, enable=True):
@@ -3218,13 +3218,11 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         self.cb_time_mode.setCurrentIndex(self.time_mode)
         self.sample_interval=s.value("sample_interval",50,type=int)
         self.cb_sample.setCurrentText(str(self.sample_interval))
-        # 在线更新配置 (关键: QSettings 里如果旧版本写了空串, .strip() 后还是空 → 强制回退默认)
-        _gh = s.value("update_github_repo", "", type=str).strip()
-        if not _gh: _gh = "dxdw2021/PG-Power"
+        # 在线更新配置 (github_repo 硬编码, 不从 QSettings 读 — 旧版本可能污染空串)
         self.update_config = {
-            "github_repo": _gh,
-            "gitlab_repo": s.value("update_gitlab_repo", "", type=str).strip(),
-            "static_url":  s.value("update_static_url",  "", type=str).strip(),
+            "github_repo": "dxdw2021/PG-Power",
+            "gitlab_repo": "",
+            "static_url":  "",
         }
         self.update_auto = s.value("update_auto", True, type=bool)
         # LuatOS/Serial settings
@@ -3268,9 +3266,8 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         s.setValue("gpib_addr",self.spin_a.value())
         s.setValue("max_volt",self.sv.value())
         s.setValue("max_curr",self.sc.value())
-        s.setValue("update_github_repo",self.update_config.get("github_repo",""))
-        s.setValue("update_gitlab_repo",self.update_config.get("gitlab_repo",""))
-        s.setValue("update_static_url",self.update_config.get("static_url",""))
+        # 不持久化 update 配置 — github_repo 硬编码, gitlab/static 留空让用户手动改
+        # 之前的旧版本可能存了空串污染 QSettings, 这里彻底跳过
         s.setValue("update_auto",self.update_auto)
         s.setValue("c_max",self.spin_cmax.value())
         s.setValue("c_min",self.spin_cmin.value())
@@ -3405,5 +3402,6 @@ if __name__=="__main__":
     ico=os.path.join(sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)),"icon.ico")
     if os.path.exists(ico): app.setWindowIcon(QIcon(ico))
     w=Main(); w.show(); sys.exit(app.exec_())
+
 
 
