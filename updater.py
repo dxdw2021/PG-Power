@@ -85,10 +85,11 @@ def _default_static_candidates():
     gh = (cfg.get("github_repo") or "").strip()
     urls = []
     if gh:
-        urls.append(f"https://cdn.jsdelivr.net/gh/{gh}@master/version.json")
+        # 优先直接读 GitHub raw (最准, 刚 push 就生效), 国内不通则自动降级 CDN
+        urls.append(f"https://raw.githubusercontent.com/{gh}/master/version.json")
+        urls.append(f"https://cdn.jsdelivr.net/gh/{gh}@master/version.json?v=1")
         urls.append(f"https://fastly.jsdelivr.net/gh/{gh}@master/version.json")
         urls.append(f"https://raw.fastgit.org/{gh}/master/version.json")
-        urls.append(f"https://raw.githubusercontent.com/{gh}/master/version.json")
     return urls
 
 def check_update(current_version, config):
