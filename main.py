@@ -1,9 +1,9 @@
-﻿import sys, os, ctypes, threading, platform, time, csv, logging, json, random, bisect
+import sys, os, ctypes, threading, platform, time, csv, logging, json, random, bisect
 import updater
 from datetime import datetime, timedelta
 from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
 
-APP_VERSION = "2.0.11"
+APP_VERSION = "2.0.12"
 REPORT_VERSION = "2.0.1"
 
 def set_dark_titlebar(window, enable=True):
