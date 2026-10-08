@@ -3,7 +3,7 @@ import updater
 from datetime import datetime, timedelta
 from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
 
-APP_VERSION = "2.0.2"
+APP_VERSION = "2.0.3"
 REPORT_VERSION = "2.0.1"
 
 def set_dark_titlebar(window, enable=True):
@@ -3220,7 +3220,7 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         self.cb_sample.setCurrentText(str(self.sample_interval))
         # 在线更新配置
         self.update_config = {
-            "github_repo": s.value("update_github_repo", "", type=str).strip(),
+            "github_repo": s.value("update_github_repo", "dxdw2021/PG-Power", type=str).strip(),
             "gitlab_repo": s.value("update_gitlab_repo", "", type=str).strip(),
             "static_url":  s.value("update_static_url",  "", type=str).strip(),
         }

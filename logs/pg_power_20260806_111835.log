@@ -1,0 +1,176 @@
+2026-08-06 11:18:35,368 [INFO] 日志: D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\logs\pg_power_20260806_111835.log
+2026-08-06 11:18:35,647 [WARNING] GPIB: Could not find module 'D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\ni4882.dll' (or one of its dependencies). Try using the full path with constructor syntax.
+2026-08-06 11:18:40,431 [INFO] [USB-ZERO] 零位与系数已重置
+2026-08-06 11:18:45,758 [INFO] USB设备已连接: VID=1209 PID=7301 EP_IN=0x81 EP_OUT=0x02
+2026-08-06 11:18:47,903 [INFO] 采集启动: mode=luatos, USB_OK=True, dev=DEVICE ID 1209:7301 on Bus 001 Address 005 =================
+ bLength                :   0x12 (18 bytes)
+ bDescriptorType        :    0x1 Device
+ bcdUSB                 :  0x210 USB 2.1
+ bDeviceClass           :    0x0 Specified at interface
+ bDeviceSubClass        :    0x0
+ bDeviceProtocol        :    0x0
+ bMaxPacketSize0        :   0x40 (64 bytes)
+ idVendor               : 0x1209
+ idProduct              : 0x7301
+ bcdDevice              :  0x100 Device 1.0
+ iManufacturer          :    0x1 上海合宙通信有限公司
+ iProduct               :    0x4 IotPower-cc
+ iSerialNumber          :    0x3 CC-1A604F530
+ bNumConfigurations     :    0x1
+  CONFIGURATION 1: 200 mA ==================================
+   bLength              :    0x9 (9 bytes)
+   bDescriptorType      :    0x2 Configuration
+   wTotalLength         :   0x20 (32 bytes)
+   bNumInterfaces       :    0x1
+   bConfigurationValue  :    0x1
+   iConfiguration       :    0x0 
+   bmAttributes         :   0x80 Bus Powered
+   bMaxPower            :   0x64 (200 mA)
+    INTERFACE 0: Vendor Specific ===========================
+     bLength            :    0x9 (9 bytes)
+     bDescriptorType    :    0x4 Interface
+     bInterfaceNumber   :    0x0
+     bAlternateSetting  :    0x0
+     bNumEndpoints      :    0x2
+     bInterfaceClass    :   0xff Vendor Specific
+     bInterfaceSubClass :   0xff
+     bInterfaceProtocol :    0x0
+     iInterface         :    0x4 IotPower-cc
+      ENDPOINT 0x81: Bulk IN ===============================
+       bLength          :    0x7 (7 bytes)
+       bDescriptorType  :    0x5 Endpoint
+       bEndpointAddress :   0x81 IN
+       bmAttributes     :    0x2 Bulk
+       wMaxPacketSize   :   0x40 (64 bytes)
+       bInterval        :    0x1
+      ENDPOINT 0x2: Bulk OUT ===============================
+       bLength          :    0x7 (7 bytes)
+       bDescriptorType  :    0x5 Endpoint
+       bEndpointAddress :    0x2 OUT
+       bmAttributes     :    0x2 Bulk
+       wMaxPacketSize   :   0x40 (64 bytes)
+       bInterval        :    0x1
+2026-08-06 11:18:47,903 [INFO] _loop线程已启动
+2026-08-06 11:18:47,903 [INFO] 采集已启动
+2026-08-06 11:18:47,903 [INFO] [ADC-RANGE] 电压量程 1→3，raw已归一化到量程1
+2026-08-06 11:18:47,903 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:18:47,903 [INFO] #1 v_raw=16411 c_raw=446 → V=3.808 C=45.1uA
+2026-08-06 11:18:47,978 [INFO] #2 v_raw=16411 c_raw=446 → V=3.808 C=45.1uA
+2026-08-06 11:18:48,051 [INFO] #3 v_raw=16411 c_raw=446 → V=3.808 C=45.1uA
+2026-08-06 11:18:48,914 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8452(→853.7μA) 历史c_mid=446(→45.1μA) 电流变化=1795%
+2026-08-06 11:18:49,484 [DEBUG] OUTLIER(LOG): c=8460 hist_mid=446 — 记录但不过滤
+2026-08-06 11:18:50,054 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8467(→855.3μA) 历史c_mid=446(→45.1μA) 电流变化=1798%
+2026-08-06 11:18:50,622 [DEBUG] OUTLIER(LOG): c=8474 hist_mid=446 — 记录但不过滤
+2026-08-06 11:18:51,193 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8481(→856.7μA) 历史c_mid=446(→45.1μA) 电流变化=1802%
+2026-08-06 11:18:54,584 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8523(→860.9μA) 历史c_mid=446(→45.1μA) 电流变化=1811%
+2026-08-06 11:18:55,154 [DEBUG] OUTLIER(LOG): c=8530 hist_mid=446 — 记录但不过滤
+2026-08-06 11:18:55,725 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8538(→862.4μA) 历史c_mid=446(→45.1μA) 电流变化=1814%
+2026-08-06 11:18:59,107 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8580(→866.7μA) 历史c_mid=446(→45.1μA) 电流变化=1824%
+2026-08-06 11:18:59,678 [DEBUG] OUTLIER(LOG): c=8587 hist_mid=446 — 记录但不过滤
+2026-08-06 11:19:00,248 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8594(→868.1μA) 历史c_mid=446(→45.1μA) 电流变化=1827%
+2026-08-06 11:19:00,816 [DEBUG] OUTLIER(LOG): c=8601 hist_mid=446 — 记录但不过滤
+2026-08-06 11:19:01,388 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8608(→869.5μA) 历史c_mid=446(→45.1μA) 电流变化=1830%
+2026-08-06 11:19:01,958 [DEBUG] OUTLIER(LOG): c=8615 hist_mid=446 — 记录但不过滤
+2026-08-06 11:19:02,171 [INFO] #200 v_raw=16411 c_raw=447 → V=3.808 C=45.2uA
+2026-08-06 11:19:02,242 [DEBUG] [V-FILTER-STAT] sample=200 v过滤=0(0.0%) c过滤≈6 v范围[16411,16411,16411]
+2026-08-06 11:19:02,528 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8623(→871.0μA) 历史c_mid=446(→45.1μA) 电流变化=1833%
+2026-08-06 11:19:03,098 [DEBUG] OUTLIER(LOG): c=8630 hist_mid=446 — 记录但不过滤
+2026-08-06 11:19:03,668 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8637(→872.4μA) 历史c_mid=446(→45.1μA) 电流变化=1837%
+2026-08-06 11:19:04,238 [DEBUG] OUTLIER(LOG): c=8644 hist_mid=446 — 记录但不过滤
+2026-08-06 11:19:04,808 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8651(→873.8μA) 历史c_mid=446(→45.1μA) 电流变化=1840%
+2026-08-06 11:19:05,378 [DEBUG] OUTLIER(LOG): c=8658 hist_mid=446 — 记录但不过滤
+2026-08-06 11:19:05,948 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8665(→875.3μA) 历史c_mid=446(→45.1μA) 电流变化=1843%
+2026-08-06 11:19:06,518 [DEBUG] OUTLIER(LOG): c=8672 hist_mid=446 — 记录但不过滤
+2026-08-06 11:19:07,088 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8680(→876.8μA) 历史c_mid=446(→45.1μA) 电流变化=1846%
+2026-08-06 11:19:08,228 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8694(→878.2μA) 历史c_mid=446(→45.1μA) 电流变化=1849%
+2026-08-06 11:19:09,374 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8708(→879.6μA) 历史c_mid=446(→45.1μA) 电流变化=1852%
+2026-08-06 11:19:13,336 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8758(→884.6μA) 历史c_mid=446(→45.1μA) 电流变化=1864%
+2026-08-06 11:19:15,926 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:19:16,502 [INFO] #400 v_raw=16421 c_raw=624 → V=3.810 C=63.0uA
+2026-08-06 11:19:16,574 [DEBUG] [V-FILTER-STAT] sample=400 v过滤=0(0.0%) c过滤≈10 v范围[16411,16411,16422]
+2026-08-06 11:19:16,720 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=8800(→888.9μA) 历史c_mid=446(→45.1μA) 电流变化=1873%
+2026-08-06 11:19:19,827 [INFO] 采集已停止
+2026-08-06 11:19:22,008 [INFO] [USB-ZERO] 零位与系数已重置
+2026-08-06 11:19:36,526 [INFO] 采集已停止
+2026-08-06 11:19:41,880 [INFO] 采集启动: mode=luatos, USB_OK=True, dev=DEVICE ID 1209:7301 on Bus 001 Address 005 =================
+ bLength                :   0x12 (18 bytes)
+ bDescriptorType        :    0x1 Device
+ bcdUSB                 :  0x210 USB 2.1
+ bDeviceClass           :    0x0 Specified at interface
+ bDeviceSubClass        :    0x0
+ bDeviceProtocol        :    0x0
+ bMaxPacketSize0        :   0x40 (64 bytes)
+ idVendor               : 0x1209
+ idProduct              : 0x7301
+ bcdDevice              :  0x100 Device 1.0
+ iManufacturer          :    0x1 上海合宙通信有限公司
+ iProduct               :    0x4 IotPower-cc
+ iSerialNumber          :    0x3 CC-1A604F530
+ bNumConfigurations     :    0x1
+  CONFIGURATION 1: 200 mA ==================================
+   bLength              :    0x9 (9 bytes)
+   bDescriptorType      :    0x2 Configuration
+   wTotalLength         :   0x20 (32 bytes)
+   bNumInterfaces       :    0x1
+   bConfigurationValue  :    0x1
+   iConfiguration       :    0x0 
+   bmAttributes         :   0x80 Bus Powered
+   bMaxPower            :   0x64 (200 mA)
+    INTERFACE 0: Vendor Specific ===========================
+     bLength            :    0x9 (9 bytes)
+     bDescriptorType    :    0x4 Interface
+     bInterfaceNumber   :    0x0
+     bAlternateSetting  :    0x0
+     bNumEndpoints      :    0x2
+     bInterfaceClass    :   0xff Vendor Specific
+     bInterfaceSubClass :   0xff
+     bInterfaceProtocol :    0x0
+     iInterface         :    0x4 IotPower-cc
+      ENDPOINT 0x81: Bulk IN ===============================
+       bLength          :    0x7 (7 bytes)
+       bDescriptorType  :    0x5 Endpoint
+       bEndpointAddress :   0x81 IN
+       bmAttributes     :    0x2 Bulk
+       wMaxPacketSize   :   0x40 (64 bytes)
+       bInterval        :    0x1
+      ENDPOINT 0x2: Bulk OUT ===============================
+       bLength          :    0x7 (7 bytes)
+       bDescriptorType  :    0x5 Endpoint
+       bEndpointAddress :    0x2 OUT
+       bmAttributes     :    0x2 Bulk
+       wMaxPacketSize   :   0x40 (64 bytes)
+       bInterval        :    0x1
+2026-08-06 11:19:41,881 [INFO] _loop线程已启动
+2026-08-06 11:19:41,881 [INFO] 采集已启动
+2026-08-06 11:19:41,882 [INFO] #1 v_raw=16420 c_raw=624 → V=3.810 C=63.0uA
+2026-08-06 11:19:41,954 [INFO] #2 v_raw=16420 c_raw=624 → V=3.810 C=63.0uA
+2026-08-06 11:19:42,025 [INFO] #3 v_raw=16420 c_raw=624 → V=3.810 C=63.0uA
+2026-08-06 11:19:43,827 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=9139(→923.1μA) 历史c_mid=624(→63.0μA) 电流变化=1365%
+2026-08-06 11:19:47,209 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=9181(→927.4μA) 历史c_mid=624(→63.0μA) 电流变化=1371%
+2026-08-06 11:19:50,593 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=9223(→931.6μA) 历史c_mid=624(→63.0μA) 电流变化=1378%
+2026-08-06 11:19:51,164 [DEBUG] OUTLIER(LOG): c=9231 hist_mid=624 — 记录但不过滤
+2026-08-06 11:19:51,734 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=9238(→933.1μA) 历史c_mid=624(→63.0μA) 电流变化=1380%
+2026-08-06 11:19:51,805 [INFO] [ADC-RANGE] 电压量程 1→2，raw已归一化到量程1
+2026-08-06 11:19:51,805 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:19:51,875 [INFO] [ADC-RANGE] 电压量程 2→3，raw已归一化到量程1
+2026-08-06 11:19:51,875 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:19:51,948 [INFO] [ADC-RANGE] 电压量程 3→2，raw已归一化到量程1
+2026-08-06 11:19:51,948 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:19:52,028 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:19:52,748 [INFO] [ADC-RANGE] 电压量程 1→2，raw已归一化到量程1
+2026-08-06 11:19:52,748 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:19:52,820 [INFO] [ADC-RANGE] 电压量程 2→3，raw已归一化到量程1
+2026-08-06 11:19:52,820 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:19:52,892 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:19:54,762 [INFO] [ADC-RANGE] 电压量程 1→3，raw已归一化到量程1
+2026-08-06 11:19:54,762 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:19:54,836 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:19:54,908 [INFO] [ADC-RANGE] 电压量程 1→3，raw已归一化到量程1
+2026-08-06 11:19:54,908 [DEBUG] [V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）
+2026-08-06 11:19:55,123 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=9280(→937.4μA) 历史c_mid=624(→63.0μA) 电流变化=1387%
+2026-08-06 11:19:56,210 [INFO] #200 v_raw=16411 c_raw=447 → V=3.808 C=45.2uA
+2026-08-06 11:19:56,282 [DEBUG] [V-FILTER-STAT] sample=200 v过滤=0(0.0%) c过滤≈1 v范围[16411,16411,16411]
+2026-08-06 11:19:58,513 [INFO] [BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 c_med=9322(→941.6μA) 历史c_mid=447(→45.2μA) 电流变化=1985%
+2026-08-06 11:19:59,084 [DEBUG] OUTLIER(LOG): c=9330 hist_mid=447 — 记录但不过滤
+2026-08-06 11:19:59,494 [INFO] 采集已停止
+2026-08-06 11:20:00,717 [INFO] USB设备已断开
