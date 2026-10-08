@@ -1,5 +1,5 @@
-{
-  "version": "2.0.2",
-  "exe_url": "https://github.com/dxdw2021/PG-Power/releases/download/v2.0.2/PG-Power_v2.0.2.exe",
-  "notes": "在线更新验证版: 12V 电压支持 + 在线更新功能\n程序内点「检查更新」应能检测到本版本并自动下载更新"
+﻿{
+  "version": "2.0.10",
+  "exe_url": "https://github.com/dxdw2021/PG-Power/releases/download/v2.0.10/PG-Power_v2.0.10.exe",
+  "notes": "v2.0.10: 下载进度条 + 启动自动检查更新\n- 启动后延迟3秒自动后台检查更新\n- 下载时显示实时进度条 (MB/百分比)\n- 手动菜单「检查更新」仍可用\n\n用于验证在线更新下载进度条功能"
 }

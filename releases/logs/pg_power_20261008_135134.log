@@ -1,0 +1,2 @@
+2026-10-08 13:51:34,492 [INFO] 日志: D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\releases\logs\pg_power_20261008_135134.log
+2026-10-08 13:51:34,660 [WARNING] GPIB: Failed to load dynlib/dll 'D:\\Tools\\Temp\\_MEI32162\\ni4882.dll'. Most likely this dynlib/dll was not found when the application was frozen.
