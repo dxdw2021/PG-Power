@@ -3,7 +3,7 @@ import updater
 from datetime import datetime, timedelta
 from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
 
-APP_VERSION = "2.0.6"
+APP_VERSION = "2.0.7"
 REPORT_VERSION = "2.0.1"
 
 def set_dark_titlebar(window, enable=True):
@@ -3218,9 +3218,11 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         self.cb_time_mode.setCurrentIndex(self.time_mode)
         self.sample_interval=s.value("sample_interval",50,type=int)
         self.cb_sample.setCurrentText(str(self.sample_interval))
-        # 在线更新配置
+        # 在线更新配置 (关键: QSettings 里如果旧版本写了空串, .strip() 后还是空 → 强制回退默认)
+        _gh = s.value("update_github_repo", "", type=str).strip()
+        if not _gh: _gh = "dxdw2021/PG-Power"
         self.update_config = {
-            "github_repo": s.value("update_github_repo", "dxdw2021/PG-Power", type=str).strip(),
+            "github_repo": _gh,
             "gitlab_repo": s.value("update_gitlab_repo", "", type=str).strip(),
             "static_url":  s.value("update_static_url",  "", type=str).strip(),
         }
@@ -3403,4 +3405,5 @@ if __name__=="__main__":
     ico=os.path.join(sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)),"icon.ico")
     if os.path.exists(ico): app.setWindowIcon(QIcon(ico))
     w=Main(); w.show(); sys.exit(app.exec_())
+
 
