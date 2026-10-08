@@ -174,6 +174,7 @@ _c_raw_history = []  # size: 50
 _v_raw_history = []  # size: 50
 _prev_hist_v_mid = 0  # 上次历史中位数（基线漂移/负载切换检测）
 _last_good_c_med = 0  # 上次稳定电流中位数（跳变限幅用）
+_adc_range = 1        # 当前电压ADC量程（用于检测量程切换）
 
 
 def read_packet():
@@ -188,7 +189,7 @@ def read_packet():
       - 16 组采样取中位数
     """
     global _debug_cnt, _debug_v_cnt, _v_filtered, _c_filtered, _sample_cnt
-    global _c_raw_history, _v_raw_history, _prev_hist_v_mid
+    global _c_raw_history, _v_raw_history, _prev_hist_v_mid, _adc_range, _last_good_c_med
 
     if _dev is None or _ep_in is None:
         return None
@@ -225,33 +226,44 @@ def read_packet():
     # 取中位数（抗个别毛刺）
     vs.sort()
     cs.sort()
-    mid = len(vs) // 2
-    v_med = vs[mid]
-    c_med = cs[mid]
+    v_mid = len(vs) // 2
+    v_med = vs[v_mid]
+    c_mid = len(cs) // 2
+    c_med = cs[c_mid]
 
     # ===== ADC量程归一化: 将不同量程下的raw值归一化到量程1 =====
+    # ⚡ 电压和电流使用独立的量程检测（硬件可能在不同通道使用不同量程）
     def _detect_range(v):
         if 15000 < v < 18000: return 1
         if 33000 < v < 36000: return 2
         if 48000 < v < 50000: return 3
         return 0
-    cur_range = _detect_range(v_med)
-    if cur_range > 1:
-        v_med //= cur_range
-        c_med //= cur_range
-        logger.debug(f"[IOT-RANGE] 量程{cur_range}归一化: v={v_med} c={c_med}")
+    def _detect_current_range(c):
+        if c < 18000: return 1
+        if 33000 < c < 36000: return 2
+        if 48000 < c < 50000: return 3
+        return 1
+    v_range = _detect_range(v_med)
+    c_range = _detect_current_range(c_med)
+    range_changed = False
+    if v_range > 1:
+        v_med = (v_med + v_range // 2) // v_range
+        range_changed = (_adc_range != v_range)
+        if range_changed:
+            logger.debug(f"[IOT-RANGE] 电压量程 {_adc_range}→{v_range}，raw已归一化到量程1")
+        _adc_range = v_range
+    elif v_range == 1 and _adc_range != 1:
+        range_changed = True
+        _adc_range = 1
+    if c_range > 1:
+        old_c = c_med
+        c_med = (c_med + c_range // 2) // c_range
+        logger.debug(f"[IOT-RANGE-C] 电流量程{c_range}归一化: c_raw {old_c}→{c_med}")
 
-    # ---- 电流跳变限幅: 抑制ADC漂移导致的尖峰 ----
+    # ===== 负载切换检测: 电流突变时重置所有历史基线 =====
+    # ⚡ 必须放在电流限幅器之前，否则负载接入电流会被限幅器误拦截
+    # ⏱ 每 3 秒最多重置一次，避免放电过渡期连续触发
     global _last_good_c_med
-    if _last_good_c_med > 0 and c_med > 100:
-        if c_med > _last_good_c_med * 3 or c_med < _last_good_c_med / 3:
-            logger.debug(f"[LIMITER] {c_med}→{_last_good_c_med} (变化{c_med/_last_good_c_med:.1f}x)")
-            c_med = _last_good_c_med
-    _last_good_c_med = c_med
-
-    # ---- 负载切换检测: 电流突变时重置所有历史基线 ----
-    # ⚡ 必须放在 OUTLIER/V-FILTER 之前，否则负载数据会被误拦截
-    # ⏱ 每 1 秒最多重置一次，避免放电过渡期连续触发
     _now = time.time()
     if _now - getattr(read_packet, '_last_reset_time', 0) < 3.0:
         pass  # 冷却期内跳过
@@ -261,6 +273,8 @@ def read_packet():
             _v_raw_history.clear()
             _c_raw_history.clear()
             _prev_hist_v_mid = 0
+            _last_good_c_med = 0  # 同步清零限幅器基线
+            read_packet._limiter_cooldown = 5  # 负载切换后跳过限幅器5个样本
             read_packet._last_reset_time = _now
             logger.info(
                 f"[BASELINE-RESET] 检测到负载切换，重置基线 "
@@ -270,6 +284,20 @@ def read_packet():
             )
             _sample_cnt += 1
             return (v_med, c_med)
+
+    # ---- 电流跳变限幅: 抑制ADC漂移导致的尖峰 ----
+    # 负载切换后冷却期内跳过限幅器，让新基线稳定
+    cooldown = getattr(read_packet, '_limiter_cooldown', 0)
+    if cooldown > 0:
+        read_packet._limiter_cooldown = cooldown - 1
+        if read_packet._limiter_cooldown == 0:
+            _last_good_c_med = c_med  # 冷却结束后用当前值建立基线
+            logger.debug(f"[LIMITER-COOLDOWN] 冷却结束，建立新基线 c_med={c_med}")
+    elif _last_good_c_med > 0 and c_med > 100:
+        if c_med > _last_good_c_med * 3 or c_med < _last_good_c_med / 3:
+            logger.debug(f"[LIMITER] {c_med}→{_last_good_c_med} (变化{c_med/_last_good_c_med:.1f}x)")
+            c_med = _last_good_c_med
+    _last_good_c_med = c_med
 
     # ---- 电流异常过滤 (仅日志，不丢弃 — 原始客户端即如此) ----
     if len(_c_raw_history) >= 5:
@@ -285,7 +313,10 @@ def read_packet():
             # 不再 return None — 允许数据通过
 
     # ---- 电压异常过滤 ----
-    if len(_v_raw_history) >= 5:
+    # 量程切换保护：量程刚变化时跳过过滤
+    if range_changed:
+        logger.debug(f"[V-FILTER] 量程刚切换，跳过本次电压过滤")
+    elif len(_v_raw_history) >= 5:
         hist_v_all = sorted(_v_raw_history)
         hist_v_mid = hist_v_all[len(hist_v_all) // 2]
         deviation = abs(v_med - hist_v_mid) / hist_v_mid if hist_v_mid > 0 else 0

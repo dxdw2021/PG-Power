@@ -1,4 +1,5 @@
-import sys, os, ctypes, threading, platform, time, csv, logging, json, random, bisect
+﻿import sys, os, ctypes, threading, platform, time, csv, logging, json, random, bisect
+import updater
 from datetime import datetime, timedelta
 from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
 
@@ -64,7 +65,8 @@ GPIB_OK = False; ni4882 = None; gpib_ud = -1; lock = threading.Lock()
 _gpib_current_offset = 0.0  # mA, GPIB电流零位校准偏移量
 _usb_current_offset = 0     # raw ADC, USB电流零位校准偏移量
 _usb_v_zero = 0             # raw ADC, USB电压零位 (空载时v_raw)
-_usb_v_scale = 1.0 / 4044.0 # V/raw, USB电压缩放系数
+_usb_v_scale = 1.0 / 4310.0 # V/raw, USB电压缩放系数（实测值：v_raw=16420→3.81V）
+_usb_c_scale = 1.0 / 9.9   # uA/raw, USB电流增益系数（可通过校准更新）
 dll = get_dll()
 if dll:
     try:
@@ -213,11 +215,12 @@ _prev_hist_v_mid = 0     # 上次历史中位数（基线漂移检测）
 _packet_dump_cnt = 0     # 已dump的异常包数量
 _adc_range = 1           # 当前ADC量程 (1/2/3)
 _last_good_c_med = 0     # 上次稳定电流中位数（跳变限幅用）
+_limiter_cooldown = 0     # 负载切换后跳过限幅器的剩余样本数
 
 def _reset_usb_history():
     """清空 s_readline() 的所有历史缓冲区和计数器，确保过滤逻辑从干净状态开始"""
     global _c_raw_history, _v_raw_history, _prev_hist_v_mid, _consec_v_filtered
-    global _last_v_filtered_ts, _packet_dump_cnt, _adc_range, _last_good_c_med
+    global _last_v_filtered_ts, _packet_dump_cnt, _adc_range, _last_good_c_med, _limiter_cooldown
     global _debug_cnt, _debug_v_cnt, _v_filtered, _sample_cnt
     _c_raw_history.clear()
     _v_raw_history.clear()
@@ -227,6 +230,7 @@ def _reset_usb_history():
     _packet_dump_cnt = 0
     _adc_range = 1
     _last_good_c_med = 0
+    _limiter_cooldown = 0  # 负载切换后跳过限幅器的样本数
     _debug_cnt = 0
     _debug_v_cnt = 0
     _v_filtered = 0
@@ -240,6 +244,13 @@ def _detect_range(v):
     if 48000 < v < 50000: return 3
     return 0
 
+def _detect_current_range(c):
+    """独立检测c_raw所处的ADC量程（电流通道可能与电压通道使用不同量程）"""
+    if c < 18000: return 1
+    if 33000 < c < 36000: return 2
+    if 48000 < c < 50000: return 3
+    return 1  # 默认量程1（电流小信号场景）
+
 def _find_index(ts, x):
     """二分查找时间戳ts中最接近x的索引"""
     i = bisect.bisect_left(ts, x)
@@ -252,7 +263,7 @@ def s_readline():
     """Read one 64-byte USB packet, return filtered (v_raw, c_raw)"""
     global _debug_cnt, _debug_v_cnt, _v_filtered, _sample_cnt
     global _consec_v_filtered, _last_v_filtered_ts
-    global _c_raw_history, _v_raw_history, _prev_hist_v_mid, _packet_dump_cnt, _adc_range, _last_good_c_med
+    global _c_raw_history, _v_raw_history, _prev_hist_v_mid, _packet_dump_cnt, _adc_range, _last_good_c_med, _limiter_cooldown
     if not _libusb_dev or _libusb_ep_in is None:
         return None
     try:
@@ -285,27 +296,38 @@ def s_readline():
 
     vs.sort(); cs.sort()
 
-    # 电压取平均（比中位数更平滑，抑制1count量化噪声）
-    v_med = sum(vs) / len(vs)
+    # 电压取中位数（抗ADC量化毛刺，与官方客户端行为一致）
+    mid = len(vs) // 2
+    v_med = vs[mid]
 
-    # 电流仍取中位数（抗个别毛刺）
-    mid = len(cs) // 2
-    c_med = cs[mid]
+    # 电流取中位数（抗个别毛刺）
+    c_mid = len(cs) // 2
+    c_med = cs[c_mid]
 
     # ===== ADC量程检测与归一化 =====
     # 将不同量程下的raw值归一化到量程1，使后续换算系数(v/4044, c/9.9)始终正确
     # ⚡ 必须放在限幅器和负载检测之前，否则raw值翻倍会导致误判
-    cur_range = _detect_range(v_med)
-    if cur_range > 1:
-        v_med = (v_med + cur_range // 2) // cur_range
-        c_med = (c_med + cur_range // 2) // cur_range
-        if _adc_range != cur_range:
+    # ⚡ 电压和电流使用独立的量程检测（硬件可能在不同通道使用不同量程）
+    v_range = _detect_range(v_med)
+    c_range = _detect_current_range(c_med)
+    range_changed = False
+    if v_range > 1:
+        v_med = (v_med + v_range // 2) // v_range
+        range_changed = (_adc_range != v_range)
+        if range_changed:
             logger.info(
-                f"[ADC-RANGE] 量程 {_adc_range}→{cur_range}，raw已归一化到量程1"
+                f"[ADC-RANGE] 电压量程 {_adc_range}→{v_range}，raw已归一化到量程1"
             )
-            _adc_range = cur_range
-    elif cur_range == 1:
+            _adc_range = v_range
+    elif v_range == 1 and _adc_range != 1:
+        range_changed = True
         _adc_range = 1
+    if c_range > 1:
+        old_c = c_med
+        c_med = (c_med + c_range // 2) // c_range
+        logger.info(
+            f"[ADC-RANGE-C] 电流量程→{c_range}，c_raw {old_c}→{c_med}（归一化到量程1）"
+        )
 
     # ===== 负载状态切换检测: 电流突变时重置电压+电流历史基线 =====
     # ⚡ 必须放在电流限幅器之前，否则负载接入电流会被限幅器误拦截
@@ -318,10 +340,11 @@ def s_readline():
             _prev_hist_v_mid = 0
             _consec_v_filtered = 0
             _last_good_c_med = 0  # 同步清零限幅器基线
+            _limiter_cooldown = 500  # 负载切换后跳过限幅器500个样本（~4秒），覆盖脉冲间隔
             logger.info(
                 f"[BASELINE-RESET] 检测到负载切换，重置电压+电流基线+限幅器 "
-                f"c_med={c_med}(→{c_med/9.9:.1f}μA) "
-                f"历史c_mid={c_hist_mid:.0f}(→{c_hist_mid/9.9:.1f}μA) "
+                f"c_med={c_med}(→{c_med*_usb_c_scale:.1f}μA) "
+                f"历史c_mid={c_hist_mid:.0f}(→{c_hist_mid*_usb_c_scale:.1f}μA) "
                 f"电流变化={abs(c_med-c_hist_mid)/c_hist_mid*100:.0f}%"
             )
             # 重置后跳过本次过滤，直接返回数据
@@ -329,13 +352,20 @@ def s_readline():
             return (v_med, c_med)
 
     # ---- 电流跳变限幅: 抑制ADC漂移导致的尖峰 ----
-    # 仅在已建立稳定基线且当前值偏离>5倍时才替换（防止缓慢漂移被锁定）
-    if _last_good_c_med > 0 and c_med > 100:
-        if c_med > _last_good_c_med * 5 or c_med < _last_good_c_med / 5:
-            logger.debug(f"[LIMITER] {c_med}→{_last_good_c_med}")
+    # 负载切换后冷却期内跳过限幅器，让新基线稳定
+    if _limiter_cooldown > 0:
+        _limiter_cooldown -= 1
+        if _limiter_cooldown == 0:
+            # 冷却结束，不设置基线 — 让下一个真实数据自然建立基线
+            # 这样限幅器不会在冷却结束瞬间误拦截
+            logger.debug(f"[LIMITER-COOLDOWN] 冷却结束，等待自然基线")
+    elif _last_good_c_med > 0 and c_med > 100:
+        # 仅在电流增加时限幅（防止ADC毛刺），电流减少时不过滤（真实负载断开）
+        if c_med > _last_good_c_med * 3:
+            logger.debug(f"[LIMITER] {c_med}→{_last_good_c_med} (变化{c_med/_last_good_c_med:.1f}x, 电流增加)")
             c_med = _last_good_c_med
         else:
-            # 正常范围内，无条件更新基线
+            # 正常范围或电流减少，无条件更新基线
             _last_good_c_med = c_med
     elif c_med > 100:
         # 首次建立基线
@@ -351,7 +381,11 @@ def s_readline():
             # 不再 return None — 允许数据通过
 
     # ===== 电压异常过滤 =====
-    if len(_v_raw_history) >= 5:
+    # 量程切换保护：量程刚变化时跳过过滤（归一化瞬态可能导致假异常）
+    if range_changed:
+        _consec_v_filtered = 0  # 量程切换后重置连续过滤计数
+        logger.debug(f"[V-FILTER] 量程刚切换，跳过本次电压过滤（保护窗口）")
+    elif len(_v_raw_history) >= 5:
         hist_v_all = sorted(_v_raw_history)
         hist_v_mid = hist_v_all[len(hist_v_all) // 2]
         deviation = abs(v_med - hist_v_mid) / hist_v_mid if hist_v_mid > 0 else 0
@@ -385,7 +419,7 @@ def s_readline():
             raw_c_min, raw_c_max = min(cs), max(cs)
             hist_v_volt = hist_v_mid / 4044.0
             cur_v_volt = v_med / 4044.0
-            c_mid = cs[mid]
+            c_mid_val = cs[c_mid]
 
             logger.info(
                 f"[V-FILTER] #{_v_filtered} │ "
@@ -396,7 +430,7 @@ def s_readline():
             logger.info(
                 f"[V-FILTER] #{_v_filtered} │ "
                 f"当前包raw: v范围[{raw_v_min},{raw_v_max}] c范围[{raw_c_min},{raw_c_max}] "
-                f"c_med={c_mid}(→{c_mid/9.9:.1f}μA) │ "
+                f"c_med={c_mid_val}(→{c_mid_val*_usb_c_scale:.1f}μA) │ "
                 f"连续过滤={_consec_v_filtered}次 │ 历史v范围[{hist_v_all[0]},{hist_v_all[-1]}]"
             )
 
@@ -851,6 +885,8 @@ class Main(QMainWindow):
         self.serial_port_name=""
         self.analysis_win=None
         self.region_panel=None
+        self.update_config = {"github_repo":"","gitlab_repo":"","static_url":""}
+        self.update_auto = True
         self.t0_abs=None
         self.setMouseTracking(True)
 
@@ -882,7 +918,7 @@ class Main(QMainWindow):
         self.timer=QTimer(); self.timer.setInterval(50); self.timer.timeout.connect(self._ui); self.timer.start()
         self.statusBar().showMessage("就绪 | GPIB: " + ("可用" if GPIB_OK else "不可用"))
 
-        if not GPIB_OK:
+        if not GPIB_OK and self.device_mode == "gpib":
             QMessageBox.warning(self,"提示","GPIB驱动未加载，可使用测试模式预览")
 
     def _init_ui(self):
@@ -900,6 +936,10 @@ class Main(QMainWindow):
         self.act_region=QAction("选区分析:关",self); self.act_region.triggered.connect(self._toggle_region_tb); tb.addAction(self.act_region)
         # Screenshot
         self.act_screenshot=QAction("截图",self); self.act_screenshot.triggered.connect(self._screenshot); tb.addAction(self.act_screenshot)
+        # 在线更新
+        self.act_update = QAction("检查更新", self)
+        self.act_update.triggered.connect(self._check_update_ui)
+        tb.addAction(self.act_update)
         # Voltage visibility toggle
         self.act_voltage=QAction("电压:显示",self); self.act_voltage.setCheckable(True)
         self.act_voltage.setChecked(True); self.act_voltage.triggered.connect(self._toggle_voltage)
@@ -1701,6 +1741,24 @@ class Main(QMainWindow):
         step3.addStretch()
         ser_lay.addLayout(step3)
 
+        # 步骤④：电流系数
+        step4=QHBoxLayout(); step4.setSpacing(8)
+        lb_step4=QLabel("④  电流系数")
+        lb_step4.setStyleSheet("font-weight:bold;font-size:13px;min-width:80px")
+        step4.addWidget(lb_step4)
+        step4.addWidget(QLabel("接入已知负载(mA):"))
+        self.spin_usb_c_ref = QDoubleSpinBox(); self.spin_usb_c_ref.setRange(0,5000)
+        self.spin_usb_c_ref.setSingleStep(0.1); self.spin_usb_c_ref.setValue(0.0)
+        self.spin_usb_c_ref.setDecimals(3); self.spin_usb_c_ref.setSuffix(" mA")
+        self.spin_usb_c_ref.setMinimumHeight(28)
+        step4.addWidget(self.spin_usb_c_ref)
+        self.btn_usb_c_cal = QPushButton("校准"); self.btn_usb_c_cal.setObjectName("save")
+        self.btn_usb_c_cal.setMinimumHeight(28)
+        self.btn_usb_c_cal.clicked.connect(self._calibrate_usb_c_scale)
+        step4.addWidget(self.btn_usb_c_cal)
+        step4.addStretch()
+        ser_lay.addLayout(step4)
+
         # ---- 分隔线 ----
         sep2=QFrame(); sep2.setFrameShape(QFrame.HLine); sep2.setStyleSheet("color:#313244;"); ser_lay.addWidget(sep2)
 
@@ -1712,6 +1770,9 @@ class Main(QMainWindow):
         self.lb_usb_v_scale = QLabel(f"系数: {1.0/4044.0:.6f}")
         self.lb_usb_v_scale.setStyleSheet("font-size:11px;color:#6c7086")
         status_row.addWidget(self.lb_usb_v_scale)
+        self.lb_usb_c_scale = QLabel(f"电流系数: {1.0/9.9:.6f}")
+        self.lb_usb_c_scale.setStyleSheet("font-size:11px;color:#6c7086")
+        status_row.addWidget(self.lb_usb_c_scale)
         self.btn_usb_reset = QPushButton("重置零位和系数"); self.btn_usb_reset.setObjectName("clear")
         self.btn_usb_reset.setMinimumHeight(22)
         self.btn_usb_reset.clicked.connect(self._reset_usb_zero)
@@ -1725,7 +1786,7 @@ class Main(QMainWindow):
         go=QGroupBox("设备输出控制")
         go_lay=QGridLayout(go); go_lay.setSpacing(8); go_lay.setColumnStretch(1,1); go_lay.setColumnStretch(3,1)
         go_lay.addWidget(QLabel("最大电压(V):"),0,0)
-        self.sv=QDoubleSpinBox(); self.sv.setRange(0,5); self.sv.setSingleStep(0.001); self.sv.setValue(4.2)
+        self.sv=QDoubleSpinBox(); self.sv.setRange(0,30); self.sv.setSingleStep(0.001); self.sv.setValue(5.0)
         go_lay.addWidget(self.sv,0,1)
         go_lay.addWidget(QLabel("最大电流(mA):"),0,2)
         self.sc=QDoubleSpinBox(); self.sc.setRange(0,2000); self.sc.setValue(1000)
@@ -1785,7 +1846,7 @@ class Main(QMainWindow):
         self.spin_cmax=QDoubleSpinBox(); self.spin_cmax.setRange(1,10000); self.spin_cmax.setValue(350); self.spin_cmax.setSingleStep(10)
         g3_lay.addWidget(self.spin_cmax,0,3)
         g3_lay.addWidget(QLabel("电压(V):"),1,0)
-        self.spin_vmin=QDoubleSpinBox(); self.spin_vmin.setRange(-10,10); self.spin_vmin.setValue(0); self.spin_vmin.setSingleStep(0.5)
+        self.spin_vmin=QDoubleSpinBox(); self.spin_vmin.setRange(-10,30); self.spin_vmin.setValue(0); self.spin_vmin.setSingleStep(0.5)
         g3_lay.addWidget(self.spin_vmin,1,1)
         g3_lay.addWidget(QLabel("~", alignment=Qt.AlignCenter),1,2)
         self.spin_vmax=QDoubleSpinBox(); self.spin_vmax.setRange(0.1,100); self.spin_vmax.setValue(20); self.spin_vmax.setSingleStep(1)
@@ -2435,10 +2496,11 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
             samples.sort()
             trimmed = samples[5:-5] if len(samples) >= 10 else samples
             v_off = round(sum(trimmed) / len(trimmed))
-            # 合法性检查：v_off > 500 说明电源可能未关闭，误采了工作电压
-            if v_off > 500:
+            # 合法性检查：v_off > 30000 说明可能误采了工作电压（约7.4V以上）
+            # 注意：部分设备零位raw值可达16000+（对应<0.1V），这是正常的
+            if v_off > 30000:
                 QMessageBox.warning(self, "校准可能错误",
-                    f"检测到电压零位 raw={v_off}（明显偏大），\n"
+                    f"检测到电压零位 raw={v_off}（异常偏大），\n"
                     f"请确认电源输出已关闭(0V)后重新校准。\n\n"
                     f"若电源已关闭但仍有较大零位值，请检查设备连接。\n"
                     f"零位已被重置为 0。")
@@ -2458,12 +2520,14 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
 
     def _reset_usb_zero(self):
         """重置USB电压/电流零位偏移"""
-        global _usb_current_offset, _usb_v_zero, _usb_v_scale
+        global _usb_current_offset, _usb_v_zero, _usb_v_scale, _usb_c_scale
         _usb_current_offset = 0
         _usb_v_zero = 0
-        _usb_v_scale = 1.0 / 4044.0
+        _usb_v_scale = 1.0 / 4310.0
+        _usb_c_scale = 1.0 / 9.9
         self.lb_usb_offset.setText("零位: V=0raw C=0raw")
         self.lb_usb_v_scale.setText(f"系数: {_usb_v_scale:.6f}")
+        self.lb_usb_c_scale.setText(f"电流系数: {_usb_c_scale:.6f}")
         logger.info("[USB-ZERO] 零位与系数已重置")
         QMessageBox.information(self, "已重置", "USB零位与系数已恢复出厂")
 
@@ -2501,6 +2565,44 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
                 f"电压系数校准完成\n参考电压: {ref_v}V\n"
                 f"raw差值: {delta_raw:.0f}\n"
                 f"新系数: {_usb_v_scale:.6f} V/raw")
+        else:
+            QMessageBox.warning(self, "失败", "未能读取到数据")
+
+    def _calibrate_usb_c_scale(self):
+        """电流系数校准：接入已知负载后计算增益系数"""
+        global _usb_c_scale
+        ref_c_mA = self.spin_usb_c_ref.value()
+        if ref_c_mA <= 0:
+            QMessageBox.warning(self, "提示", "请先输入已知负载电流值(>0mA)")
+            return
+        ref_c_uA = ref_c_mA * 1000.0  # mA → µA
+        _reset_usb_history()
+        time.sleep(0.2)
+        samples = []
+        for i in range(100):
+            sample = s_readline()
+            if sample:
+                v_raw, c_raw = sample
+                samples.append(c_raw)
+            time.sleep(0.01)
+        if samples:
+            samples.sort()
+            trimmed = samples[10:-10] if len(samples) >= 20 else samples
+            c_now = sum(trimmed) / len(trimmed)
+            delta_raw = abs(c_now - _usb_current_offset)  # abs() 处理反向ADC
+            if delta_raw <= 10:
+                QMessageBox.warning(self, "失败",
+                    f"请确认已接入已知负载({ref_c_mA}mA)\n"
+                    f"当前raw={c_now:.0f} 零位raw={_usb_current_offset}\n"
+                    f"差值={delta_raw:.0f} 过小，请检查负载连接和零位校准")
+                return
+            _usb_c_scale = ref_c_uA / delta_raw
+            self.lb_usb_c_scale.setText(f"电流系数: {_usb_c_scale:.6f}")
+            logger.info(f"[USB-CSCALE] 校准完成: I_ref={ref_c_mA}mA({ref_c_uA:.0f}µA) raw_delta={delta_raw:.0f} scale={_usb_c_scale:.6f}")
+            QMessageBox.information(self, "完成",
+                f"电流系数校准完成\n参考电流: {ref_c_mA}mA ({ref_c_uA:.0f}µA)\n"
+                f"raw差值: {delta_raw:.0f}\n"
+                f"新系数: {_usb_c_scale:.6f} µA/raw")
         else:
             QMessageBox.warning(self, "失败", "未能读取到数据")
 
@@ -2559,11 +2661,9 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
                     sample = s_readline()
                     if sample is not None:
                         v_raw, c_raw = sample
-                        # Calibration: v_raw~16985→4.2V, c_raw~688→69.5uA
-                        # v = (v_raw - _usb_v_zero) * _usb_v_scale (V)
-                        # c = max(0, c_raw - _usb_current_offset) / 9.9 (uA)
-                        v = (v_raw - _usb_v_zero) * _usb_v_scale
-                        c = max(0, c_raw - _usb_current_offset) / 9.9  # uA
+                        # 直接转换：使用全局标定系数（默认 V:1/4310, C:1/9.9）
+                        v = v_raw * _usb_v_scale   # V
+                        c = c_raw * _usb_c_scale   # uA
                         sample_cnt += 1
                         if sample_cnt <= 3 or sample_cnt % 200 == 0:
                             logger.info(f"#{sample_cnt} v_raw={v_raw} c_raw={c_raw} → V={v:.3f} C={c:.1f}uA")
@@ -3118,6 +3218,13 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         self.cb_time_mode.setCurrentIndex(self.time_mode)
         self.sample_interval=s.value("sample_interval",50,type=int)
         self.cb_sample.setCurrentText(str(self.sample_interval))
+        # 在线更新配置
+        self.update_config = {
+            "github_repo": s.value("update_github_repo", "", type=str).strip(),
+            "gitlab_repo": s.value("update_gitlab_repo", "", type=str).strip(),
+            "static_url":  s.value("update_static_url",  "", type=str).strip(),
+        }
+        self.update_auto = s.value("update_auto", True, type=bool)
         # LuatOS/Serial settings
         self.device_mode=s.value("device_mode","gpib")
         mode_idx=0 if self.device_mode=="gpib" else 1
@@ -3130,7 +3237,7 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         if 0 <= quick_type_idx < self.cb_quick_type.count():
             self.cb_quick_type.setCurrentIndex(quick_type_idx)
         # GPIB电流零位偏移恢复
-        global _gpib_current_offset, _usb_current_offset, _usb_v_zero, _usb_v_scale
+        global _gpib_current_offset, _usb_current_offset, _usb_v_zero, _usb_v_scale, _usb_c_scale
         _gpib_current_offset = s.value("gpib_current_offset", 0.0, type=float)
         if hasattr(self, 'lb_gpib_offset'):
             self.lb_gpib_offset.setText(f"电流零位: {_gpib_current_offset:.4f} mA")
@@ -3141,12 +3248,16 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         if _usb_v_zero > 500:
             logger.warning(f"[USB-VZERO] QSettings中电压零位={_usb_v_zero}（异常偏大），已重置为0")
             _usb_v_zero = 0
-        v_scale_def = 1.0 / 4044.0
+        v_scale_def = 1.0 / 4310.0
         _usb_v_scale = s.value("usb_v_scale", v_scale_def, type=float)
         if hasattr(self, 'lb_usb_offset'):
             self.lb_usb_offset.setText(f"零位: V={_usb_v_zero}raw C={_usb_current_offset}raw")
         if hasattr(self, 'lb_usb_v_scale'):
             self.lb_usb_v_scale.setText(f"系数: {_usb_v_scale:.6f}")
+        c_scale_def = 1.0 / 9.9
+        _usb_c_scale = s.value("usb_c_scale", c_scale_def, type=float)
+        if hasattr(self, 'lb_usb_c_scale'):
+            self.lb_usb_c_scale.setText(f"电流系数: {_usb_c_scale:.6f}")
 
     def _save_settings(self):
         s=QSettings("PG-Power","settings")
@@ -3155,6 +3266,10 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         s.setValue("gpib_addr",self.spin_a.value())
         s.setValue("max_volt",self.sv.value())
         s.setValue("max_curr",self.sc.value())
+        s.setValue("update_github_repo",self.update_config.get("github_repo",""))
+        s.setValue("update_gitlab_repo",self.update_config.get("gitlab_repo",""))
+        s.setValue("update_static_url",self.update_config.get("static_url",""))
+        s.setValue("update_auto",self.update_auto)
         s.setValue("c_max",self.spin_cmax.value())
         s.setValue("c_min",self.spin_cmin.value())
         s.setValue("v_max",self.spin_vmax.value())
@@ -3175,6 +3290,7 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         s.setValue("usb_current_offset", _usb_current_offset)
         s.setValue("usb_v_zero", _usb_v_zero)
         s.setValue("usb_v_scale", _usb_v_scale)
+        s.setValue("usb_c_scale", _usb_c_scale)
 
     def closeEvent(self, e):
         self.collecting=False
@@ -3198,3 +3314,91 @@ if __name__=="__main__":
     ico=os.path.join(sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)),"icon.ico")
     if os.path.exists(ico): app.setWindowIcon(QIcon(ico))
     w=Main(); w.show(); sys.exit(app.exec_())
+
+    # ===== 在线更新 =====
+    def _check_update_ui(self):
+        self._run_update_check(show_dialog_even_no_update=True)
+
+    def _run_update_check(self, show_dialog_even_no_update=False):
+        from PyQt5.QtCore import QThread, pyqtSignal as _sig
+        class CheckThread(QThread):
+            result = _sig(dict)
+            def __init__(self, ver, cfg):
+                super().__init__(None)
+                self.ver, self.cfg = ver, cfg
+            def run(self):
+                try:
+                    r = updater.check_update(self.ver, self.cfg)
+                except Exception as e:
+                    r = {"available": False, "error": str(e)}
+                self.result.emit(r)
+
+        self._update_thread = CheckThread(APP_VERSION, self.update_config)
+        self._update_thread.result.connect(
+            lambda r: self._on_update_checked(r, show_dialog_even_no_update))
+        self.statusBar().showMessage("正在检查更新...")
+        self._update_thread.start()
+
+    def _on_update_checked(self, result, show_dialog):
+        self.statusBar().showMessage("就绪")
+        if result.get("available"):
+            new_ver = result["latest"]
+            msg = (f"发现新版本: {new_ver} (当前 {APP_VERSION})\n\n"
+                   f"来源: {result.get('source')}\n"
+                   f"下载地址: {result.get('exe_url')}\n\n")
+            if result.get("notes"):
+                msg += f"更新说明:\n{result['notes'][:500]}\n\n"
+            msg += "是否现在下载?"
+            ret = QMessageBox.question(self, "发现新版本", msg,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if ret == QMessageBox.Yes:
+                self._download_and_apply(result["exe_url"], new_ver)
+        else:
+            if show_dialog:
+                QMessageBox.information(self, "检查更新",
+                    f"当前已是最新版本 ({APP_VERSION})\n\n"
+                    f"{result.get('error', '')}")
+
+    def _download_and_apply(self, exe_url, new_ver):
+        import tempfile, os as _os
+        from PyQt5.QtCore import QThread, pyqtSignal as _sig
+        self._update_dialog = QMessageBox(self)
+        self._update_dialog.setWindowTitle("下载中")
+        self._update_dialog.setText(f"正在下载 PG-Power {new_ver} ...\n请稍候, 不要关闭本窗口。")
+        self._update_dialog.setStandardButtons(QMessageBox.NoButton)
+        self._update_dialog.show()
+        QApplication.processEvents()
+
+        dest = _os.path.join(tempfile.gettempdir(), f"PG-Power_v{new_ver}.exe")
+        class DlThread(QThread):
+            done = _sig(object)
+            def __init__(self, url, dst):
+                super().__init__(None)
+                self.url, self.dst = url, dst
+            def run(self):
+                ok, info = updater.download_exe(self.url, self.dst)
+                self.done.emit((ok, info, self.dst))
+
+        self._dl_thread = DlThread(exe_url, dest)
+        self._dl_thread.done.connect(
+            lambda res: self._on_update_downloaded(res, new_ver))
+        self._dl_thread.start()
+
+    def _on_update_downloaded(self, res, new_ver):
+        self._update_dialog.close()
+        ok, info, dest = res
+        if not ok:
+            QMessageBox.warning(self, "下载失败", f"下载出错: {info}")
+            return
+        ret = QMessageBox.question(self, "准备更新",
+            f"新版本已下载到: {dest}\n\n",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if ret != QMessageBox.Yes:
+            return
+        cur_exe = sys.executable if getattr(sys, "frozen", False) else __file__
+        need_restart, bat = updater.apply_update(dest, cur_exe)
+        if not need_restart:
+            QMessageBox.information(self, "更新完成", "已更新到最新版本, 请重新启动程序。")
+            return
+        self.close()
+        QApplication.instance().quit()

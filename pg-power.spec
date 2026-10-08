@@ -92,6 +92,7 @@ a = Analysis(
         'usb.core',
         'usb.backend.libusb1',
         'lupa',
+        'updater',
     ],
     hookspath=[os.path.join(PROJECT_DIR, 'pyi_hooks')],
     hooksconfig={},
