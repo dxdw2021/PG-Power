@@ -3,7 +3,7 @@ import updater
 from datetime import datetime, timedelta
 from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
 
-APP_VERSION = "2.0.8"
+APP_VERSION = "2.0.9"
 REPORT_VERSION = "2.0.1"
 
 def set_dark_titlebar(window, enable=True):
@@ -917,6 +917,10 @@ class Main(QMainWindow):
 
         self.timer=QTimer(); self.timer.setInterval(50); self.timer.timeout.connect(self._ui); self.timer.start()
         self.statusBar().showMessage("就绪 | GPIB: " + ("可用" if GPIB_OK else "不可用"))
+
+        # 启动后延迟 3 秒自动检查更新 (后台线程, 不阻塞 UI)
+        # update_auto 默认 True, 用户可在设置里关掉
+        QTimer.singleShot(3000, self._auto_check_update_on_startup)
 
         if not GPIB_OK and self.device_mode == "gpib":
             QMessageBox.warning(self,"提示","GPIB驱动未加载，可使用测试模式预览")
@@ -3299,6 +3303,12 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
 
 
     # ===== 在线更新 =====
+    def _auto_check_update_on_startup(self):
+        """启动后自动检查更新: 有新版本弹窗提示, 无新版本静默不打扰"""
+        if not getattr(self, "update_auto", True):
+            return
+        self._run_update_check(show_dialog_even_no_update=False)
+
     def _check_update_ui(self):
         self._run_update_check(show_dialog_even_no_update=True)
 
@@ -3345,27 +3355,58 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
     def _download_and_apply(self, exe_url, new_ver):
         import tempfile, os as _os
         from PyQt5.QtCore import QThread, pyqtSignal as _sig
-        self._update_dialog = QMessageBox(self)
-        self._update_dialog.setWindowTitle("下载中")
-        self._update_dialog.setText(f"正在下载 PG-Power {new_ver} ...\n请稍候, 不要关闭本窗口。")
-        self._update_dialog.setStandardButtons(QMessageBox.NoButton)
+
+        # 带进度条的下载对话框
+        self._update_dialog = QProgressDialog(
+            f"正在下载 PG-Power {new_ver} ...", "取消", 0, 100, self)
+        self._update_dialog.setWindowTitle("下载更新")
+        self._update_dialog.setWindowModality(Qt.WindowModal)
+        self._update_dialog.setMinimumDuration(0)        # 立即显示
+        self._update_dialog.setAutoClose(False)          # 下载完不自动关, 我们自己关
+        self._update_dialog.setAutoReset(False)
+        self._update_dialog.setValue(0)
+        self._update_dialog.setLabelText("连接中...")
+        self._update_dialog.setCancelButton(None)         # 暂不支持取消
         self._update_dialog.show()
         QApplication.processEvents()
 
         dest = _os.path.join(tempfile.gettempdir(), f"PG-Power_v{new_ver}.exe")
         class DlThread(QThread):
             done = _sig(object)
+            progress = _sig(int, int)   # received, total
             def __init__(self, url, dst):
                 super().__init__(None)
                 self.url, self.dst = url, dst
+                self._cancelled = False
             def run(self):
-                ok, info = updater.download_exe(self.url, self.dst)
+                def _cb(r, t):
+                    if not self._cancelled:
+                        self.progress.emit(r, t)
+                ok, info = updater.download_exe(self.url, self.dst, progress_cb=_cb)
                 self.done.emit((ok, info, self.dst))
+            def cancel(self):
+                self._cancelled = True
 
         self._dl_thread = DlThread(exe_url, dest)
+        self._dl_thread.progress.connect(
+            lambda r, tot, nv=new_ver: self._on_update_progress(r, tot, nv))
         self._dl_thread.done.connect(
             lambda res: self._on_update_downloaded(res, new_ver))
+        self._update_dialog.canceled.connect(self._dl_thread.cancel)
         self._dl_thread.start()
+
+    def _on_update_progress(self, received, total, new_ver):
+        if total and total > 0:
+            pct = int(received * 100 / total)
+            self._update_dialog.setRange(0, 100)
+            self._update_dialog.setValue(pct)
+            self._update_dialog.setLabelText(
+                f"正在下载 PG-Power v{new_ver} ... {received//1024//1024}/{total//1024//1024} MB ({pct}%)")
+        else:
+            self._update_dialog.setRange(0, 0)  # 脉冲进度
+            self._update_dialog.setLabelText(
+                f"正在下载 PG-Power v{new_ver} ... 已下载 {received//1024//1024} MB")
+        QApplication.processEvents()
 
     def _on_update_downloaded(self, res, new_ver):
         self._update_dialog.close()
@@ -3402,6 +3443,7 @@ if __name__=="__main__":
     ico=os.path.join(sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)),"icon.ico")
     if os.path.exists(ico): app.setWindowIcon(QIcon(ico))
     w=Main(); w.show(); sys.exit(app.exec_())
+
 
 
 
