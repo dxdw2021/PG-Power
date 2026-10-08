@@ -1,4 +1,4 @@
-﻿"""
+"""
 PG-Power 在线更新模块
 --------------------
 支持 3 种发布源（依次尝试，第一个成功就用）:
@@ -215,7 +215,6 @@ def apply_update(new_exe_path, current_exe_path, wait_sec=3):
         return False, None
     bat_path = os.path.join(tempfile.gettempdir(), "pg_power_update.bat")
     bat_content = f"""@echo off
-chcp 65001 >nul
 echo PG-Power 正在更新...
 timeout /t {max(3, wait_sec)} /nobreak >nul
 :retry
