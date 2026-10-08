@@ -136,23 +136,164 @@ def gpib_query(cmd: str) -> str:
     return buf.value.decode("ascii").strip()
 
 # ===================== 界面与绘图 =====================
+
+# ---------- QSS 深色主题样式 ----------
+DARK_THEME = """
+/* 全局 */
+QMainWindow, QWidget {
+    background-color: #1e1e22;
+    color: #e0e0e0;
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    font-size: 13px;
+}
+
+/* 分组框 */
+QGroupBox {
+    background-color: #2b2d30;
+    border: 1px solid #3a3d42;
+    border-radius: 8px;
+    margin-top: 14px;
+    padding: 16px 12px 12px 12px;
+    font-weight: bold;
+    font-size: 13px;
+    color: #c0c4cc;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 14px;
+    padding: 0 6px;
+    color: #8a8f99;
+    font-size: 11px;
+    letter-spacing: 1px;
+}
+
+/* 标签 */
+QLabel {
+    color: #c0c4cc;
+    background: transparent;
+}
+QLabel#valueLabel {
+    color: #e0e0e0;
+    font-size: 20px;
+    font-weight: bold;
+    padding: 2px 8px;
+}
+QLabel#unitLabel {
+    color: #6a6f78;
+    font-size: 13px;
+    padding-left: 0px;
+}
+QLabel#statusLabel {
+    font-size: 12px;
+    padding: 2px 8px;
+}
+
+/* 输入框 */
+QSpinBox {
+    background-color: #25272a;
+    border: 1px solid #3a3d42;
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: #e0e0e0;
+    min-height: 22px;
+    font-size: 13px;
+}
+QSpinBox:focus {
+    border-color: #4a9eff;
+}
+
+/* 按钮通用 */
+QPushButton {
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    min-height: 28px;
+    font-size: 12px;
+    font-weight: bold;
+    color: #ffffff;
+}
+QPushButton:hover {
+    opacity: 0.9;
+}
+QPushButton:pressed {
+    padding-top: 7px;
+    padding-bottom: 5px;
+}
+QPushButton:disabled {
+    background-color: #3a3d42 !important;
+    color: #6a6f78 !important;
+}
+
+/* 连接按钮 */
+QPushButton#btnConnect {
+    background-color: #4a9eff;
+}
+QPushButton#btnConnect:hover {
+    background-color: #3a8aee;
+}
+QPushButton#btnConnect:disabled {
+    background-color: #3a3d42 !important;
+}
+
+/* 开启输出 */
+QPushButton#btnOutputOn {
+    background-color: #2fb344;
+}
+QPushButton#btnOutputOn:hover {
+    background-color: #279e3a;
+}
+
+/* 关闭输出 */
+QPushButton#btnOutputOff {
+    background-color: #e03131;
+}
+QPushButton#btnOutputOff:hover {
+    background-color: #c92a2a;
+}
+
+/* 开始采集 */
+QPushButton#btnStart {
+    background-color: #2fb344;
+}
+QPushButton#btnStart:hover {
+    background-color: #279e3a;
+}
+
+/* 停止采集 */
+QPushButton#btnStop {
+    background-color: #e03131;
+}
+QPushButton#btnStop:hover {
+    background-color: #c92a2a;
+}
+
+/* 分隔线 */
+Line {
+    color: #3a3d42;
+}
+"""
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("GPIB 电源采集工具")
-        self.resize(1000, 600)
+        self.setWindowTitle("PG-Power | GPIB 电源实时采集")
+        self.setMinimumSize(900, 520)
+        self.resize(1100, 650)
 
         self.x_data = []
         self.y_volt = []
         self.y_curr = []
         self.time_count = 0
+        self.latest_volt = 0.0
+        self.latest_curr = 0.0
 
         self.init_ui()
         # 检测GPIB状态，弹出提示、禁用按钮
         self.check_gpib_status()
 
         self.ui_timer = QTimer()
-        self.ui_timer.setInterval(20)
+        self.ui_timer.setInterval(50)
         self.ui_timer.timeout.connect(self.update_plot)
         self.ui_timer.start()
 
@@ -160,28 +301,82 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(12, 8, 12, 12)
+        main_layout.setSpacing(8)
 
-        ctrl_group = QGroupBox("设备控制")
+        # ========== 1. 状态栏 ==========
+        status_bar = QWidget()
+        status_bar.setStyleSheet("background-color: #25272a; border-radius: 6px; padding: 4px;")
+        status_layout = QHBoxLayout(status_bar)
+        status_layout.setContentsMargins(12, 6, 12, 6)
+        status_layout.setSpacing(16)
+
+        # 连接状态
+        self.status_indicator = QLabel("●")
+        self.status_indicator.setStyleSheet("color: #e03131; font-size: 14px; background: transparent;")
+        self.status_label = QLabel("未连接")
+        self.status_label.setObjectName("statusLabel")
+        self.status_label.setStyleSheet("color: #e03131; background: transparent;")
+
+        # 实时数值
+        self.label_volt_display = QLabel("0.000")
+        self.label_volt_display.setObjectName("valueLabel")
+        self.label_volt_display.setStyleSheet("color: #ff6b6b; background: transparent;")
+        lbl_volt_unit = QLabel("V")
+        lbl_volt_unit.setObjectName("unitLabel")
+
+        self.label_curr_display = QLabel("0.000")
+        self.label_curr_display.setObjectName("valueLabel")
+        self.label_curr_display.setStyleSheet("color: #51cf66; background: transparent;")
+        lbl_curr_unit = QLabel("A")
+        lbl_curr_unit.setObjectName("unitLabel")
+
+        status_layout.addWidget(self.status_indicator)
+        status_layout.addWidget(self.status_label)
+        status_layout.addStretch()
+        status_layout.addWidget(QLabel("电压:"))
+        status_layout.addWidget(self.label_volt_display)
+        status_layout.addWidget(lbl_volt_unit)
+        status_layout.addSpacing(12)
+        status_layout.addWidget(QLabel("电流:"))
+        status_layout.addWidget(self.label_curr_display)
+        status_layout.addWidget(lbl_curr_unit)
+        main_layout.addWidget(status_bar)
+
+        # ========== 2. 控制区 ==========
+        ctrl_group = QGroupBox("GPIB 控制")
         ctrl_layout = QHBoxLayout(ctrl_group)
+        ctrl_layout.setSpacing(8)
 
-        self.lbl_addr = QLabel("GPIB地址:")
+        self.lbl_addr = QLabel("GPIB 地址:")
         self.spin_addr = QSpinBox()
         self.spin_addr.setRange(0, 30)
         self.spin_addr.setValue(5)
+        self.spin_addr.setFixedWidth(60)
 
-        self.btn_connect = QPushButton("连接设备")
+        self.btn_connect = QPushButton("🔗 连接设备")
+        self.btn_connect.setObjectName("btnConnect")
+        self.btn_connect.setMinimumWidth(100)
         self.btn_connect.clicked.connect(self.on_connect)
 
-        self.btn_output_on = QPushButton("开启输出")
+        self.btn_output_on = QPushButton("⏺ 开启输出")
+        self.btn_output_on.setObjectName("btnOutputOn")
+        self.btn_output_on.setMinimumWidth(90)
         self.btn_output_on.clicked.connect(lambda: gpib_send_cmd("OUTP ON"))
 
-        self.btn_output_off = QPushButton("关闭输出")
+        self.btn_output_off = QPushButton("⏹ 关闭输出")
+        self.btn_output_off.setObjectName("btnOutputOff")
+        self.btn_output_off.setMinimumWidth(90)
         self.btn_output_off.clicked.connect(lambda: gpib_send_cmd("OUTP OFF"))
 
-        self.btn_start = QPushButton("开始采集")
+        self.btn_start = QPushButton("▶ 开始采集")
+        self.btn_start.setObjectName("btnStart")
+        self.btn_start.setMinimumWidth(90)
         self.btn_start.clicked.connect(self.on_start_collect)
 
-        self.btn_stop = QPushButton("停止采集")
+        self.btn_stop = QPushButton("■ 停止采集")
+        self.btn_stop.setObjectName("btnStop")
+        self.btn_stop.setMinimumWidth(90)
         self.btn_stop.clicked.connect(self.on_stop_collect)
 
         # 保存按钮引用，后续统一禁用
@@ -195,21 +390,38 @@ class MainWindow(QMainWindow):
 
         ctrl_layout.addWidget(self.lbl_addr)
         ctrl_layout.addWidget(self.spin_addr)
-        for btn in self.gpib_btns:
-            ctrl_layout.addWidget(btn)
+        ctrl_layout.addSpacing(8)
+        ctrl_layout.addWidget(self.btn_connect)
+        ctrl_layout.addWidget(self.btn_output_on)
+        ctrl_layout.addWidget(self.btn_output_off)
+        ctrl_layout.addWidget(self.btn_start)
+        ctrl_layout.addWidget(self.btn_stop)
+        ctrl_layout.addStretch()
         main_layout.addWidget(ctrl_group)
 
-        # 绘图区域
+        # ========== 3. 绘图区域 ==========
         pg.setConfigOptions(antialias=True)
         self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setTitle("电压/电流 实时曲线")
-        self.plot_widget.setLabel("left", "数值")
-        self.plot_widget.setLabel("bottom", "采集点数")
-        self.plot_widget.addLegend()
+        self.plot_widget.setBackground("#1a1a1e")
+        self.plot_widget.setTitle(
+            '<span style="color: #c0c4cc; font-size: 14px;">电压 / 电流 实时曲线</span>'
+        )
+        self.plot_widget.setLabel("left", "数值", color="#8a8f99")
+        self.plot_widget.setLabel("bottom", "采集点数", color="#8a8f99")
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.15)
+        self.plot_widget.setMenuEnabled(False)
+        self.plot_widget.addLegend(offset=(-10, 10))
 
-        self.curve_volt = self.plot_widget.plot(pen=pg.mkPen((255, 0, 0), width=2), name="电压(V)")
-        self.curve_curr = self.plot_widget.plot(pen=pg.mkPen((0, 255, 0), width=2), name="电流(A)")
-        main_layout.addWidget(self.plot_widget)
+        # 两条曲线：电压(红色)、电流(绿色)
+        self.curve_volt = self.plot_widget.plot(
+            pen=pg.mkPen(color=(255, 80, 80), width=2),
+            name="<span style='color: #ff6b6b;'>电压 (V)</span>"
+        )
+        self.curve_curr = self.plot_widget.plot(
+            pen=pg.mkPen(color=(80, 200, 80), width=2),
+            name="<span style='color: #51cf66;'>电流 (A)</span>"
+        )
+        main_layout.addWidget(self.plot_widget, stretch=1)
 
     def check_gpib_status(self):
         """检查GPIB可用性，弹窗提示 + 禁用按钮"""
@@ -235,11 +447,17 @@ class MainWindow(QMainWindow):
         addr = self.spin_addr.value()
         if gpib_ud >= 0:
             gpib_close()
-            self.btn_connect.setText("连接设备")
+            self.btn_connect.setText("🔗 连接设备")
+            self.status_indicator.setStyleSheet("color: #e03131; font-size: 14px; background: transparent;")
+            self.status_label.setText("未连接")
+            self.status_label.setStyleSheet("color: #e03131; background: transparent;")
             print("设备已断开")
         else:
             if gpib_open(addr):
-                self.btn_connect.setText("断开设备")
+                self.btn_connect.setText("🔗 断开设备")
+                self.status_indicator.setStyleSheet("color: #2fb344; font-size: 14px; background: transparent;")
+                self.status_label.setText(f"已连接 (地址 {addr})")
+                self.status_label.setStyleSheet("color: #2fb344; background: transparent;")
                 print(f"GPIB 设备 {addr} 连接成功")
             else:
                 print("GPIB 连接失败，请检查地址、硬件")
@@ -294,6 +512,13 @@ class MainWindow(QMainWindow):
         with data_lock:
             self.curve_volt.setData(self.x_data, self.y_volt)
             self.curve_curr.setData(self.x_data, self.y_curr)
+            if self.y_volt:
+                self.latest_volt = self.y_volt[-1]
+            if self.y_curr:
+                self.latest_curr = self.y_curr[-1]
+        # 更新数值显示
+        self.label_volt_display.setText(f"{self.latest_volt:.3f}")
+        self.label_curr_display.setText(f"{self.latest_curr:.3f}")
 
     def closeEvent(self, event):
         global collect_running
@@ -303,6 +528,7 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setStyleSheet(DARK_THEME)
     win = MainWindow()
     win.show()
     sys.exit(app.exec_())
