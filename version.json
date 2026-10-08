@@ -1,5 +1,5 @@
 {
-  "version": "2.0.12",
-  "exe_url": "https://github.com/dxdw2021/PG-Power/releases/download/v2.0.12/PG-Power_v2.0.12.exe",
-  "notes": "v2.0.12: 进度条验证版本\n\n用于 v2.0.11 用户测试在线更新进度条"
+  "version": "2.0.13",
+  "exe_url": "https://github.com/dxdw2021/PG-Power/releases/download/v2.0.13/PG-Power_v2.0.13.exe",
+  "notes": "v2.0.13: 正式发布\n\n- 修复 QProgressDialog import 缺失（在线更新进度条）\n- 三按钮弹窗：立即下载 / 在浏览器下载 / 稍后再说\n- 下载地址可点击（蓝色超链接）\n- 在线更新零第三方依赖（纯标准库 urllib）"
 }
