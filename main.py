@@ -3222,13 +3222,13 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         self.cb_time_mode.setCurrentIndex(self.time_mode)
         self.sample_interval=s.value("sample_interval",50,type=int)
         self.cb_sample.setCurrentText(str(self.sample_interval))
-        # 在线更新配置 (github_repo 硬编码, 不从 QSettings 读 — 旧版本可能污染空串)
+        # 在线更新配置 (GitCode 优先, 国内快; GitHub 备用)
         self.update_config = {
-            "github_repo": "dxdw2021/PG-Power",
-            "gitlab_repo": "",
-            "static_url":  "",
+            "gitcode_repo": "dxdw2021/PG-Power",
+            "github_repo":  "dxdw2021/PG-Power",
+            "gitlab_repo":  "",
+            "static_url":   "",
         }
-        self.update_auto = s.value("update_auto", True, type=bool)
         # LuatOS/Serial settings
         self.device_mode=s.value("device_mode","gpib")
         mode_idx=0 if self.device_mode=="gpib" else 1
