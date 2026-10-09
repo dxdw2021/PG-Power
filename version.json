@@ -1,5 +1,5 @@
 {
-  "version": "2.0.19",
-  "exe_url": "https://raw.gitcode.com/dxdw2021/PG-Power/blobs/62fed8f84d107de237af3a6163b164be473f7de9/releases/PG-Power_v2.0.19.exe",
-  "notes": "v2.0.19: update test target (from v2.0.18)"
+  "version": "2.0.21",
+  "exe_url": "https://raw.gitcode.com/dxdw2021/PG-Power/blobs/e15b0a59c2b732e4f3d68c408de311b0b601bc65/releases/PG-Power_v2.0.21.exe",
+  "notes": "v2.0.21: fix updater clean leftover _MEI* temp dirs before launch (test target from v2.0.20)"
 }
