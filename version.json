@@ -1,5 +1,5 @@
 {
   "version": "2.0.15",
-  "exe_url": "https://gitcode.com/dxdw2021/PG-Power/-/releases/v2.0.15/download/pg-power_v2.0.15.exe",
+  "exe_url": "''' + $correctUrl + '''",
   "notes": "v2.0.15: 切换 GitCode 下载源 + 纯 Python 线程修复更新替换"
 }
