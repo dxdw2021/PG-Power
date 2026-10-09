@@ -121,6 +121,7 @@ def check_update(current_version, config):
         result["error"] = "未配置任何发布源 (github_repo / gitlab_repo / static_url 均为空)"
         return result
     last_err = None
+    best_tag = best_src = None
     for name, getter in sources:
         data = getter()
         if not data:
@@ -130,6 +131,10 @@ def check_update(current_version, config):
         if not tag or not exe_url:
             last_err = f"{name} 返回数据缺少 tag 或 exe_url 字段"
             continue
+        # 记录所有源中见过的最高版本: 无更新时展示最高版本而非最后一个源
+        # (CDN 兜底源缓存可能远低于真实最新版, 用 last_err 会误导用户)
+        if best_tag is None or compare_versions(tag, best_tag) > 0:
+            best_tag, best_src = tag, name
         cmp = compare_versions(tag, current_version)
         if cmp > 0:
             result.update(available=True, latest=tag, exe_url=exe_url,
@@ -137,7 +142,12 @@ def check_update(current_version, config):
             return result
         else:
             last_err = f"{name} 最新版本 {tag} 不高于当前 {current_version}"
-    result["error"] = last_err or "所有发布源都无更新"
+    if best_tag:
+        rel = ("与当前版本一致" if compare_versions(best_tag, current_version) == 0
+               else f"低于当前 {current_version}")
+        result["error"] = f"各发布源最高版本 {best_tag} ({best_src}), {rel}"
+    else:
+        result["error"] = last_err or "所有发布源都无更新"
     return result
 
 
@@ -359,25 +369,62 @@ def _build_update_script(new_exe_path, current_exe_path, wait_sec=3):
         "    }",
         "}",
         "Start-Sleep -Seconds 2",
-        # ---- 替换: Move 失败 (跨卷/源缺失) 时降级 Copy, 错误必须进 catch ----
-        '"moving..." >> $log',
+        # ---- 替换: 新 exe 以新版本文件名落盘到当前 exe 同目录 ----
+        # 成功后删除旧版本文件, 启动新名文件 (进程名/文件名随版本更新)
+        # 失败降级: 原地覆盖旧文件 (旧方案)
+        "$curDir = [System.IO.Path]::GetDirectoryName(" + DQ + cp_ + DQ + ")",
+        "$baseNew = [System.IO.Path]::GetFileName(" + DQ + np_ + DQ + ")",
+        "$launch = [System.IO.Path]::Combine($curDir, $baseNew)",
+        '"placing new exe to $launch" >> $log',
         "$moved = $false",
+        "$renamed = $false",
         "try {",
-        "    Move-Item -LiteralPath " + DQ + np_ + DQ + " -Destination " + DQ + cp_ + DQ + " -Force -ErrorAction Stop",
+        "    Move-Item -LiteralPath " + DQ + np_ + DQ + " -Destination $launch -Force -ErrorAction Stop",
         "    $moved = $true",
+        "    $renamed = $true",
         "} catch {",
-        '    "move failed: $_" >> $log',
+        '    "place(move) failed: $_" >> $log',
         "}",
         "if (-not $moved) {",
         "    try {",
-        "        Copy-Item -LiteralPath " + DQ + np_ + DQ + " -Destination " + DQ + cp_ + DQ + " -Force -ErrorAction Stop",
+        "        Copy-Item -LiteralPath " + DQ + np_ + DQ + " -Destination $launch -Force -ErrorAction Stop",
         "        $moved = $true",
-        '        "copy OK" >> $log',
+        "        $renamed = $true",
+        '        "place(copy) OK" >> $log',
         "    } catch {",
-        '        "copy failed: $_" >> $log',
+        '        "place(copy) failed: $_" >> $log',
         "    }",
         "}",
-        'if ($moved) { "replace OK" >> $log } else { "replace FAILED" >> $log }',
+        # 降级: 新名落盘失败 → 原地覆盖旧文件 (旧方案)
+        "if (-not $moved) {",
+        '    "rename place failed, fallback to in-place overwrite" >> $log',
+        "    try {",
+        "        Move-Item -LiteralPath " + DQ + np_ + DQ + " -Destination " + DQ + cp_ + DQ + " -Force -ErrorAction Stop",
+        "        $moved = $true",
+        "    } catch {",
+        '        "move failed: $_" >> $log',
+        "    }",
+        "    if (-not $moved) {",
+        "        try {",
+        "            Copy-Item -LiteralPath " + DQ + np_ + DQ + " -Destination " + DQ + cp_ + DQ + " -Force -ErrorAction Stop",
+        "            $moved = $true",
+        '            "copy OK" >> $log',
+        "        } catch {",
+        '            "copy failed: $_" >> $log',
+        "        }",
+        "    }",
+        "    $launch = " + DQ + cp_ + DQ,
+        "}",
+        # 新名落盘成功: 删除旧版本文件 (旧进程已退出; 失败仅记录不阻塞)
+        "if ($renamed -and $launch -ine " + DQ + cp_ + DQ + ") {",
+        "    try {",
+        "        Remove-Item -LiteralPath " + DQ + cp_ + DQ + " -Force -ErrorAction Stop",
+        '        "old exe removed" >> $log',
+        "    } catch {",
+        '        "old exe remove failed (kept): $_" >> $log',
+        "    }",
+        "}",
+        'if ($moved) { "replace OK, launch=$launch" >> $log } else { "replace FAILED" >> $log }',
         # 替换失败还去启动, 会把旧版本误报为"更新成功" → 直接弹窗终止
         "if (-not $moved) {",
         '    "replace FAILED, skip launch" >> $log',
@@ -390,22 +437,25 @@ def _build_update_script(new_exe_path, current_exe_path, wait_sec=3):
         "}",
         # ---- 启动 + 验证 ----
         # 验证规则: 枚举该进程所有可见窗口标题, 任一匹配 "PG-Power |" 即成功。
-        # 不再把"存在其它窗口"直接判为错误 —— 应用自身的提示框 (如 GPIB 警告)
-        # 标题不是 PG-Power |, 之前被误判为错误框导致新进程被反复杀死。
-        # PyInstaller DLL 错误框 → 无 PG-Power | 标题 → 30 秒超时 → 杀掉清理重试。
+        # 标题恰为 "Error" (PyInstaller bootloader DLL 错误框) → 快速判 errwin,
+        # 不再空等 30 秒。退避重试: 失败后间隔 5/10/20 秒, 共 4 次尝试,
+        # 给杀软实时扫描留出时间 (新落盘文件首次执行常被短暂拦截)。
         '"launching..." >> $log',
-        "Start-Sleep -Seconds 3",
+        "$launchName = [System.IO.Path]::GetFileNameWithoutExtension($launch)",
+        '"launch=$launch name=$launchName" >> $log',
+        "Start-Sleep -Seconds 5",
         "$ok = $false",
-        "for ($i = 1; $i -le 3; $i++) {",
+        "$delays = @(5,10,20)",
+        "for ($i = 1; $i -le 4; $i++) {",
         "    try {",
-        "        $sp = Start-Process -FilePath " + DQ + cp_ + DQ + " -PassThru",
+        "        $sp = Start-Process -FilePath $launch -PassThru",
         '        "attempt $i started PID=$($sp.Id)" >> $log',
         "        $verdict = " + DQ + "timeout" + DQ,
         "        $deadline = (Get-Date).AddSeconds(30)",
         "        $logged = $false",
         "        while ((Get-Date) -lt $deadline) {",
-        "            $alive = $false; $good = $false",
-        "            foreach ($q in @(Get-Process -Name " + DQ + proc_name + DQ + " -ErrorAction SilentlyContinue)) {",
+        "            $alive = $false; $good = $false; $errwin = $false",
+        "            foreach ($q in @(Get-Process -Name $launchName -ErrorAction SilentlyContinue)) {",
         "                $alive = $true",
         "                $titles = $null",
         "                if ($enumOk) {",
@@ -420,28 +470,34 @@ def _build_update_script(new_exe_path, current_exe_path, wait_sec=3):
         "                }",
         "                foreach ($t in $titles) {",
         "                    if ($t -match " + DQ + "PG-Power \|" + DQ + ") { $good = $true }",
+        "                    elseif ($t -eq " + DQ + "Error" + DQ + ") { $errwin = $true }",
         "                }",
         "            }",
-        "            if (-not $alive) { $verdict = " + DQ + "died" + DQ + "; break }",
         "            if ($good) { $verdict = " + DQ + "ok" + DQ + "; break }",
+        "            if ($errwin) { $verdict = " + DQ + "errwin" + DQ + "; break }",
+        "            if (-not $alive) { $verdict = " + DQ + "died" + DQ + "; break }",
         "            Start-Sleep -Seconds 1",
         "        }",
         '        "attempt $i verdict=$verdict" >> $log',
         "        if ($verdict -eq " + DQ + "ok" + DQ + ") { $ok = $true; break }",
         '        "attempt $i not ok, killing and cleaning _MEI..." >> $log',
-        "        Get-Process -Name " + DQ + proc_name + DQ + " -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
+        "        Get-Process -Name $launchName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
         "        Start-Sleep -Seconds 2",
         "        Get-ChildItem -Path $tmpDir -Directory -Filter " + DQ + "_MEI*" + DQ + " -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue",
         "    } catch {",
         '        "attempt $i error: $_" >> $log',
         "    }",
-        "    Start-Sleep -Seconds 3",
+        "    if ($i -lt 4) {",
+        "        $d = $delays[$i-1]",
+        '        "retry $i in $d s..." >> $log',
+        "        Start-Sleep -Seconds $d",
+        "    }",
         "}",
         'if ($ok) { "launched ok" >> $log } else {',
-        '    "ALL 3 LAUNCH ATTEMPTS FAILED" >> $log',
+        '    "ALL 4 LAUNCH ATTEMPTS FAILED" >> $log',
         '    try {',
         '        $wsh = New-Object -ComObject WScript.Shell',
-        '        $wsh.Popup("更新文件已替换, 但新版启动失败. 请手动运行: ' + cp_ + '", 0, "PG-Power Update", 16) | Out-Null',
+        '        $wsh.Popup("更新文件已替换, 但新版启动失败. 请手动运行: $launch", 0, "PG-Power Update", 16) | Out-Null',
         '    } catch { }',
         "}",
         "Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue",
