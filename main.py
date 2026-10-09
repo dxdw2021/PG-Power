@@ -3,7 +3,7 @@ import updater
 from datetime import datetime, timedelta
 from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
 
-APP_VERSION = "2.0.13"
+APP_VERSION = "2.0.14"
 REPORT_VERSION = "2.0.1"
 
 def set_dark_titlebar(window, enable=True):
