@@ -3,7 +3,7 @@ import updater
 from datetime import datetime, timedelta
 from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
 
-APP_VERSION = "2.0.23"
+APP_VERSION = "2.0.25"
 REPORT_VERSION = "2.0.1"
 
 def set_dark_titlebar(window, enable=True):
@@ -918,12 +918,16 @@ class Main(QMainWindow):
         self.timer=QTimer(); self.timer.setInterval(50); self.timer.timeout.connect(self._ui); self.timer.start()
         self.statusBar().showMessage("就绪 | GPIB: " + ("可用" if GPIB_OK else "不可用"))
 
+        # GPIB 警告必须延迟到主窗口 show() 之后再弹:
+        # 在 __init__ 内模态弹出会阻塞事件循环, 导致主窗口未显示就出现对话框,
+        # 且更新脚本按窗口标题验证新版本启动时会被该"提示"框误判为错误窗口
+        if not GPIB_OK and self.device_mode == "gpib":
+            QTimer.singleShot(800, lambda: QMessageBox.warning(
+                self, "提示", "GPIB驱动未加载，可使用测试模式预览"))
+
         # 启动后延迟 3 秒自动检查更新 (后台线程, 不阻塞 UI)
         # update_auto 默认 True, 用户可在设置里关掉
         QTimer.singleShot(3000, self._auto_check_update_on_startup)
-
-        if not GPIB_OK and self.device_mode == "gpib":
-            QMessageBox.warning(self,"提示","GPIB驱动未加载，可使用测试模式预览")
 
     def _init_ui(self):
         m=QVBoxLayout(self); m.setContentsMargins(0,0,0,0); m.setSpacing(0)
@@ -3389,6 +3393,12 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
         import tempfile, os as _os
         from PyQt5.QtCore import QThread, pyqtSignal as _sig
 
+        # 防重入: 已有下载进行中时忽略重复触发 (自动检查 + 手动检查可能叠加)
+        _old_dlg = getattr(self, "_update_dialog", None)
+        if _old_dlg is not None and _old_dlg.isVisible():
+            logger.info("[更新] 已有下载任务进行中, 忽略重复请求")
+            return
+
         logger.info(f"[更新] 开始下载 v{new_ver}, URL={exe_url}")
 
         # 带进度条的下载对话框
@@ -3469,6 +3479,9 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
 
     def _on_update_downloaded(self, res, new_ver, exe_url=""):
         try:
+            if getattr(self, "_update_applying", False):
+                logger.info("[更新] 已有替换流程执行中, 忽略重复回调")
+                return
             self._update_dialog.close()
             ok, info, dest = res
             if not ok:
@@ -3487,8 +3500,10 @@ td.right {{ text-align: right; font-variant-numeric: tabular-nums; color: #11182
             if ret != QMessageBox.Yes:
                 return
             cur_exe = sys.executable if getattr(sys, "frozen", False) else __file__
+            self._update_applying = True
             need_restart, bat = updater.apply_update(dest, cur_exe)
             if not need_restart:
+                self._update_applying = False
                 QMessageBox.information(self, "更新完成", "已更新到最新版本, 请重新启动程序。")
                 return
             self.close()

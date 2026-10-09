@@ -242,37 +242,97 @@ def download_exe(url, dest_path, progress_cb=None):
         return False, str(e)
 
 
-def apply_update(new_exe_path, current_exe_path, wait_sec=3):
-    """PowerShell 独立进程: 原生支持 Unicode 中文路径"""
-    import subprocess as _sp
-    current_exe_path = os.path.abspath(current_exe_path)
-    new_exe_path = os.path.abspath(new_exe_path)
-    proc_name = os.path.splitext(os.path.basename(current_exe_path))[0]
+_WIN_ENUM_CSHARP = r"""
+using System;
+using System.Text;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public static class PGWin {
+    delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int GetWindowText(IntPtr hWnd, StringBuilder s, int max);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    public static List<string> TitlesOf(uint target) {
+        List<string> res = new List<string>();
+        EnumProc proc = delegate(IntPtr h, IntPtr l) {
+            uint p;
+            GetWindowThreadProcessId(h, out p);
+            if (p == target && IsWindowVisible(h)) {
+                StringBuilder sb = new StringBuilder(512);
+                GetWindowText(h, sb, 512);
+                if (sb.Length > 0) res.Add(sb.ToString());
+            }
+            return true;
+        };
+        EnumWindows(proc, IntPtr.Zero);
+        return res;
+    }
+}
+"""
 
-    if not getattr(sys, "frozen", False):
-        try:
-            shutil.copy2(new_exe_path, current_exe_path)
-            logger.info("[更新] dev 模式: 已覆盖, 请手动重启")
-        except OSError as e:
-            logger.error(f"[更新] copy 失败: {e}")
-        return False, None
 
+def _build_update_script(new_exe_path, current_exe_path, wait_sec=3):
+    """生成替换 + 启动验证的 PowerShell 脚本文本 (拆出来便于语法验证)"""
     log_p = os.path.join(tempfile.gettempdir(), "pg_power_update.log")
-    ps1_p = os.path.join(tempfile.gettempdir(), "pg_power_update.ps1")
+    lock_p = os.path.join(tempfile.gettempdir(), "pg_power_update.lock")
     NL = chr(13) + chr(10)
     DQ = chr(34)
 
     lp = log_p.replace(os.sep, "/")
     np_ = new_exe_path.replace(os.sep, "/")
     cp_ = current_exe_path.replace(os.sep, "/")
+    proc_name = os.path.splitext(os.path.basename(current_exe_path))[0]
 
     lines = [
         "$ErrorActionPreference = 'Continue'",
         "$log = " + DQ + lp + DQ,
+        "$lock = " + DQ + lock_p + DQ,
+        # ---- 单实例锁: 两个更新脚本并发会互相杀进程/抢同一个源文件 ----
+        "$lockOk = $false",
+        "for ($lt = 0; $lt -lt 2; $lt++) {",
+        "    try {",
+        "        $fs = [System.IO.File]::Open($lock, " + DQ + "CreateNew" + DQ + ", " + DQ + "Write" + DQ + ", " + DQ + "None" + DQ + ")",
+        "        $pidBytes = [System.Text.Encoding]::UTF8.GetBytes([string]$PID)",
+        "        $fs.Write($pidBytes, 0, $pidBytes.Length)",
+        "        $fs.Close()",
+        "        $lockOk = $true",
+        "        break",
+        "    } catch {",
+        # 锁已存在: 判断持有者是否还活着 (防止崩溃残留锁卡死后续更新)
+        "        $running = $false",
+        "        try {",
+        "            $age = (Get-Date) - (Get-Item -LiteralPath $lock).LastWriteTime",
+        "            if ($age.TotalMinutes -lt 15) {",
+        "                $txt = [System.IO.File]::ReadAllText($lock)",
+        "                $opid = 0",
+        "                if (-not [int]::TryParse($txt, [ref]$opid)) { $running = $true }",
+        "                elseif (Get-Process -Id $opid -ErrorAction SilentlyContinue) { $running = $true }",
+        "            }",
+        "        } catch { $running = $false }",
+        "        if ($running) { break }",
+        "        Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue",
+        "    }",
+        "}",
+        "if (-not $lockOk) {",
+        '    "another update instance is running, exit" | Add-Content -LiteralPath $log',
+        "    exit 0",
+        "}",
         '"update start" > $log',
         '"new=' + np_ + '" >> $log',
         '"cur=' + cp_ + '" >> $log',
         '"proc=' + proc_name + '" >> $log',
+        # ---- 枚举窗口标题用 (区分应用主窗口 / 提示框 / PyInstaller 错误框) ----
+        "$enumOk = $false",
+        "try {",
+        "    Add-Type -TypeDefinition @'",
+        _WIN_ENUM_CSHARP.rstrip("\r\n"),
+        "'@",
+        "    $enumOk = $true",
+        "} catch {",
+        '    "Add-Type failed: $_" >> $log',
+        "}",
         'Start-Sleep -Seconds ' + str(max(3, wait_sec)),
         '"waiting process exit..." >> $log',
         "$deadline = (Get-Date).AddSeconds(60)",
@@ -280,6 +340,13 @@ def apply_update(new_exe_path, current_exe_path, wait_sec=3):
         "    $p = Get-Process -Name " + DQ + proc_name + DQ + " -ErrorAction SilentlyContinue",
         "    if (-not $p) { break }",
         "    Start-Sleep -Seconds 1",
+        "}",
+        # 等待超时旧进程仍存活 (卡死/挂住): 强制结束, 否则替换必然失败
+        "$leftover = @(Get-Process -Name " + DQ + proc_name + DQ + " -ErrorAction SilentlyContinue)",
+        "if ($leftover.Count -gt 0) {",
+        '    "old process still alive after 60s, force kill" >> $log',
+        "    $leftover | Stop-Process -Force -ErrorAction SilentlyContinue",
+        "    Start-Sleep -Seconds 2",
         "}",
         '"process exited, cleaning leftover _MEI* dirs..." >> $log',
         "$tmpDir = [System.IO.Path]::GetTempPath()",
@@ -292,15 +359,40 @@ def apply_update(new_exe_path, current_exe_path, wait_sec=3):
         "    }",
         "}",
         "Start-Sleep -Seconds 2",
+        # ---- 替换: Move 失败 (跨卷/源缺失) 时降级 Copy, 错误必须进 catch ----
         '"moving..." >> $log',
+        "$moved = $false",
         "try {",
-        "    Move-Item -LiteralPath " + DQ + np_ + DQ + " -Destination " + DQ + cp_ + DQ + " -Force >> $log 2>&1",
-        '    "move OK" >> $log',
+        "    Move-Item -LiteralPath " + DQ + np_ + DQ + " -Destination " + DQ + cp_ + DQ + " -Force -ErrorAction Stop",
+        "    $moved = $true",
         "} catch {",
         '    "move failed: $_" >> $log',
-        "    try { Copy-Item -LiteralPath " + DQ + np_ + DQ + " -Destination " + DQ + cp_ + DQ + " -Force >> $log 2>&1; 'copy OK' >> $log }",
-        '    catch { "copy failed: $_" >> $log }',
         "}",
+        "if (-not $moved) {",
+        "    try {",
+        "        Copy-Item -LiteralPath " + DQ + np_ + DQ + " -Destination " + DQ + cp_ + DQ + " -Force -ErrorAction Stop",
+        "        $moved = $true",
+        '        "copy OK" >> $log',
+        "    } catch {",
+        '        "copy failed: $_" >> $log',
+        "    }",
+        "}",
+        'if ($moved) { "replace OK" >> $log } else { "replace FAILED" >> $log }',
+        # 替换失败还去启动, 会把旧版本误报为"更新成功" → 直接弹窗终止
+        "if (-not $moved) {",
+        '    "replace FAILED, skip launch" >> $log',
+        "    try {",
+        '        $wsh = New-Object -ComObject WScript.Shell',
+        '        $wsh.Popup("更新替换失败 (文件可能被占用): ' + cp_ + '", 0, "PG-Power Update", 16) | Out-Null',
+        "    } catch { }",
+        "    Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue",
+        "    exit 0",
+        "}",
+        # ---- 启动 + 验证 ----
+        # 验证规则: 枚举该进程所有可见窗口标题, 任一匹配 "PG-Power |" 即成功。
+        # 不再把"存在其它窗口"直接判为错误 —— 应用自身的提示框 (如 GPIB 警告)
+        # 标题不是 PG-Power |, 之前被误判为错误框导致新进程被反复杀死。
+        # PyInstaller DLL 错误框 → 无 PG-Power | 标题 → 30 秒超时 → 杀掉清理重试。
         '"launching..." >> $log',
         "Start-Sleep -Seconds 3",
         "$ok = $false",
@@ -310,23 +402,33 @@ def apply_update(new_exe_path, current_exe_path, wait_sec=3):
         '        "attempt $i started PID=$($sp.Id)" >> $log',
         "        $verdict = " + DQ + "timeout" + DQ,
         "        $deadline = (Get-Date).AddSeconds(30)",
+        "        $logged = $false",
         "        while ((Get-Date) -lt $deadline) {",
-        "            $alive = $false; $good = $false; $hasWin = $false",
+        "            $alive = $false; $good = $false",
         "            foreach ($q in @(Get-Process -Name " + DQ + proc_name + DQ + " -ErrorAction SilentlyContinue)) {",
         "                $alive = $true",
-        "                if ($q.MainWindowTitle) {",
-        "                    $hasWin = $true",
-        "                    if ($q.MainWindowTitle -match " + DQ + "PG-Power \|" + DQ + ") { $good = $true }",
+        "                $titles = $null",
+        "                if ($enumOk) {",
+        "                    try { $titles = [PGWin]::TitlesOf([uint32]$q.Id) } catch { $titles = $null }",
+        "                }",
+        "                if ($null -eq $titles -or $titles.Count -eq 0) {",
+        "                    if ($q.MainWindowTitle) { $titles = @($q.MainWindowTitle) } else { $titles = @() }",
+        "                }",
+        "                if ($titles.Count -gt 0 -and -not $logged) {",
+        "                    \"attempt '$i' window titles: $($titles -join ' // ')\" >> $log",
+        "                    $logged = $true",
+        "                }",
+        "                foreach ($t in $titles) {",
+        "                    if ($t -match " + DQ + "PG-Power \|" + DQ + ") { $good = $true }",
         "                }",
         "            }",
         "            if (-not $alive) { $verdict = " + DQ + "died" + DQ + "; break }",
         "            if ($good) { $verdict = " + DQ + "ok" + DQ + "; break }",
-        "            if ($hasWin) { $verdict = " + DQ + "errwin" + DQ + "; break }",
         "            Start-Sleep -Seconds 1",
         "        }",
         '        "attempt $i verdict=$verdict" >> $log',
         "        if ($verdict -eq " + DQ + "ok" + DQ + ") { $ok = $true; break }",
-        '        "attempt $i killing and cleaning _MEI..." >> $log',
+        '        "attempt $i not ok, killing and cleaning _MEI..." >> $log',
         "        Get-Process -Name " + DQ + proc_name + DQ + " -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
         "        Start-Sleep -Seconds 2",
         "        Get-ChildItem -Path $tmpDir -Directory -Filter " + DQ + "_MEI*" + DQ + " -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue",
@@ -342,8 +444,29 @@ def apply_update(new_exe_path, current_exe_path, wait_sec=3):
         '        $wsh.Popup("更新文件已替换, 但新版启动失败. 请手动运行: ' + cp_ + '", 0, "PG-Power Update", 16) | Out-Null',
         '    } catch { }',
         "}",
+        "Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue",
     ]
-    ps_script = NL.join(lines) + NL
+    return NL.join(lines) + NL
+
+
+def apply_update(new_exe_path, current_exe_path, wait_sec=3):
+    """PowerShell 独立进程: 原生支持 Unicode 中文路径"""
+    import subprocess as _sp
+    current_exe_path = os.path.abspath(current_exe_path)
+    new_exe_path = os.path.abspath(new_exe_path)
+
+    if not getattr(sys, "frozen", False):
+        try:
+            shutil.copy2(new_exe_path, current_exe_path)
+            logger.info("[更新] dev 模式: 已覆盖, 请手动重启")
+        except OSError as e:
+            logger.error(f"[更新] copy 失败: {e}")
+        return False, None
+
+    log_p = os.path.join(tempfile.gettempdir(), "pg_power_update.log")
+    ps1_p = os.path.join(tempfile.gettempdir(), "pg_power_update.ps1")
+
+    ps_script = _build_update_script(new_exe_path, current_exe_path, wait_sec)
 
     try:
         with open(ps1_p, "w", encoding="utf-8-sig") as f:
