@@ -1,5 +1,5 @@
 {
-    "version":  "2.0.25",
-    "exe_url":  "https://raw.gitcode.com/dxdw2021/PG-Power/blobs/2fd1c6f6e6d081112f3c78045788342e4637cb34/releases/PG-Power_v2.0.25.exe",
-    "notes":  "v2.0.25: fix update misjudging app prompt dialogs as errors (EnumWindows all titles), single-instance update script lock, defer GPIB warning until GUI shown (test target from v2.0.24)"
+    "version":  "v2.0.27",
+    "exe_url":  "https://raw.gitcode.com/dxdw2021/PG-Power/blobs/1ae20ae955975faa7fdd67397892e0af422ea3c3/releases/PG-Power_v2.0.27.exe",
+    "notes":  "v2.0.27: update lands new exe with new version filename (old file removed), Error-dialog fast-fail + 5/10/20s backoff retry x4, no-update check shows highest version across sources (test target from v2.0.26)"
 }
