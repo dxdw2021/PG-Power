@@ -1,5 +1,5 @@
 {
-  "version": "2.0.16",
-  "exe_url": "https://raw.gitcode.com/dxdw2021/PG-Power/blobs/a18d76409017d30011ef0b9c56f88cc3198caea4/releases/PG-Power_v2.0.16.exe",
-  "notes": "v2.0.16: PowerShell独立进程修复更新替换, GitCode国内源 5.9MB/s"
+  "version": "2.0.17",
+  "exe_url": "https://raw.gitcode.com/dxdw2021/PG-Power/blobs/dc22265a34aaaf1d2fbb4b70b524a51a0bee0ae8/releases/PG-Power_v2.0.17.exe",
+  "notes": "v2.0.17: PowerShell独立进程修复更新替换"
 }
