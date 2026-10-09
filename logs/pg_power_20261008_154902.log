@@ -1,0 +1,2 @@
+2026-10-08 15:49:02,238 [INFO] 日志: D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\logs\pg_power_20261008_154902.log
+2026-10-08 15:49:02,461 [WARNING] GPIB: Could not find module 'D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\ni4882.dll' (or one of its dependencies). Try using the full path with constructor syntax.

@@ -80,12 +80,16 @@ def _discover_asset_from_api(data):
 _last_config = None
 
 def _default_static_candidates():
-    """基于 github_repo 自动推导几个 CDN 版本文件地址, 国内可用"""
+    """基于 repo 自动推导 CDN 版本文件地址, 国内优先"""
     cfg = _last_config or {}
-    gh = (cfg.get("github_repo") or "").strip()
     urls = []
+    # GitCode contents API (国内最快, 排第一)
+    gc = (cfg.get("gitcode_repo") or "").strip()
+    if gc:
+        urls.append(f"https://gitcode.com/api/v5/repos/{gc}/contents/version.json?ref=master&_type=gitcode")
+    # GitHub raw + CDN 降级
+    gh = (cfg.get("github_repo") or "").strip()
     if gh:
-        # 优先直接读 GitHub raw (最准, 刚 push 就生效), 国内不通则自动降级 CDN
         urls.append(f"https://raw.githubusercontent.com/{gh}/master/version.json")
         urls.append(f"https://cdn.jsdelivr.net/gh/{gh}@master/version.json?v=1")
         urls.append(f"https://fastly.jsdelivr.net/gh/{gh}@master/version.json")
@@ -97,9 +101,13 @@ def check_update(current_version, config):
               "notes": None, "source": None, "error": None}
     sources = []
     global _last_config; _last_config = config
+    gitcode_repo = (config or {}).get("gitcode_repo", "").strip()
     github_repo = (config or {}).get("github_repo", "").strip()
     gitlab_repo = (config or {}).get("gitlab_repo", "").strip()
     static_url = (config or {}).get("static_url", "").strip()
+    # GitCode 优先 (国内快)
+    if gitcode_repo:
+        sources.append(("gitcode", lambda: _check_gitcode(gitcode_repo)))
     if github_repo:
         sources.append(("github", lambda: _check_github(github_repo)))
     if gitlab_repo:
@@ -131,6 +139,33 @@ def check_update(current_version, config):
             last_err = f"{name} 最新版本 {tag} 不高于当前 {current_version}"
     result["error"] = last_err or "所有发布源都无更新"
     return result
+
+
+def _check_gitcode(repo):
+    """GitCode API: contents 读 version.json (国内速度快)"""
+    import base64
+    # 优先: contents API 读 version.json 文件
+    url = f"https://gitcode.com/api/v5/repos/{repo}/contents/version.json?ref=master"
+    data = _http_get_json(url)
+    if data and data.get("type") == "file" and data.get("content"):
+        try:
+            raw = base64.b64decode(data["content"]).decode("utf-8")
+            import json as _j
+            vj = _j.loads(raw)
+            return {"tag": vj.get("version", ""),
+                    "exe_url": vj.get("exe_url", ""),
+                    "notes": vj.get("notes", "")}
+        except Exception:
+            pass
+    # 降级: Release API
+    url2 = f"https://gitcode.com/api/v5/repos/{repo}/releases/latest"
+    data2 = _http_get_json(url2)
+    if data2:
+        exe_url = _discover_asset_from_api(data2)
+        tag = data2.get("tag_name", "")
+        if exe_url and tag:
+            return {"tag": tag, "exe_url": exe_url, "notes": data2.get("body", "")[:4000]}
+    return None
 
 
 def _check_github(repo):

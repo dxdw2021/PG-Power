@@ -1,0 +1,8 @@
+2026-10-08 15:49:49,162 [INFO] 日志: D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\logs\pg_power_20261008_154949.log
+2026-10-08 15:49:49,373 [WARNING] GPIB: Could not find module 'D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\ni4882.dll' (or one of its dependencies). Try using the full path with constructor syntax.
+2026-10-08 15:49:54,191 [DEBUG] [updater] GET https://raw.githubusercontent.com/dxdw2021/PG-Power/master/version.json 失败: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+2026-10-08 15:49:54,368 [DEBUG] [updater] GET https://raw.githubusercontent.com/dxdw2021/PG-Power/master/version.json 失败: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+2026-10-08 15:49:55,555 [DEBUG] [updater] GET https://raw.fastgit.org/dxdw2021/PG-Power/master/version.json 失败: <urlopen error [Errno 11001] getaddrinfo failed>
+2026-10-08 15:49:57,281 [DEBUG] [updater] GET https://raw.githubusercontent.com/dxdw2021/PG-Power/master/version.json 失败: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+2026-10-08 15:49:58,629 [DEBUG] [updater] GET https://raw.fastgit.org/dxdw2021/PG-Power/master/version.json 失败: <urlopen error [Errno 11001] getaddrinfo failed>
+2026-10-08 15:49:58,793 [DEBUG] [updater] GET https://raw.fastgit.org/dxdw2021/PG-Power/master/version.json 失败: <urlopen error [Errno 11001] getaddrinfo failed>

@@ -1,0 +1,3 @@
+2026-10-09 10:36:38,754 [INFO] 日志: D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\logs\pg_power_20261009_103638.log
+2026-10-09 10:36:39,323 [WARNING] GPIB: Could not find module 'D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\ni4882.dll' (or one of its dependencies). Try using the full path with constructor syntax.
+2026-10-09 10:36:50,156 [DEBUG] [updater] GET https://raw.fastgit.org/dxdw2021/PG-Power/master/version.json 失败: <urlopen error [Errno 11001] getaddrinfo failed>

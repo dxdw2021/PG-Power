@@ -1,0 +1,5 @@
+2026-10-08 16:59:32,254 [INFO] 日志: D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\logs\pg_power_20261008_165932.log
+2026-10-08 16:59:32,540 [WARNING] GPIB: Could not find module 'D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\ni4882.dll' (or one of its dependencies). Try using the full path with constructor syntax.
+2026-10-08 16:59:44,737 [INFO] 用户点立即下载: https://github.com/dxdw2021/PG-Power/releases/download/v2.0.11/PG-Power_v2.0.11.exe
+2026-10-08 16:59:44,737 [INFO] [更新] 开始下载 vv2.0.11, URL=https://github.com/dxdw2021/PG-Power/releases/download/v2.0.11/PG-Power_v2.0.11.exe
+2026-10-08 16:59:44,739 [ERROR] 下载启动异常: name 'QProgressDialog' is not defined

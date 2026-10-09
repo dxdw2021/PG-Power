@@ -3,7 +3,7 @@ import updater
 from datetime import datetime, timedelta
 from ctypes import c_int, c_char_p, create_string_buffer, Structure, byref, sizeof
 
-APP_VERSION = "2.0.14"
+APP_VERSION = "2.0.15"
 REPORT_VERSION = "2.0.1"
 
 def set_dark_titlebar(window, enable=True):
@@ -885,7 +885,7 @@ class Main(QMainWindow):
         self.serial_port_name=""
         self.analysis_win=None
         self.region_panel=None
-        self.update_config = {"github_repo":"","gitlab_repo":"","static_url":""}
+        self.update_config = {"gitcode_repo":"dxdw2021/PG-Power","github_repo":"","gitlab_repo":"","static_url":""}
         self.update_auto = True
         self.t0_abs=None
         self.setMouseTracking(True)

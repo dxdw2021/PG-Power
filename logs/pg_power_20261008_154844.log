@@ -1,0 +1,4 @@
+2026-10-08 15:48:44,996 [INFO] 日志: D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\logs\pg_power_20261008_154844.log
+2026-10-08 15:48:46,067 [WARNING] GPIB: Could not find module 'D:\工作文件夹\宠物定位器\P55\测试工具\PG-Power\ni4882.dll' (or one of its dependencies). Try using the full path with constructor syntax.
+2026-10-08 15:48:52,202 [DEBUG] [updater] GET https://raw.githubusercontent.com/dxdw2021/PG-Power/master/version.json 失败: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+2026-10-08 15:48:58,288 [DEBUG] [updater] GET https://raw.fastgit.org/dxdw2021/PG-Power/master/version.json 失败: <urlopen error [Errno 11001] getaddrinfo failed>
