@@ -1,5 +1,5 @@
 {
-  "version": "2.0.23",
-  "exe_url": "https://raw.gitcode.com/dxdw2021/PG-Power/blobs/3953e539bafb52e4441644376e67c5fe31ff04ae/releases/PG-Power_v2.0.23.exe",
-  "notes": "v2.0.23: updater launch validation via window title + error dialog retry (test target from v2.0.22)"
+    "version":  "2.0.25",
+    "exe_url":  "https://raw.gitcode.com/dxdw2021/PG-Power/blobs/2fd1c6f6e6d081112f3c78045788342e4637cb34/releases/PG-Power_v2.0.25.exe",
+    "notes":  "v2.0.25: fix update misjudging app prompt dialogs as errors (EnumWindows all titles), single-instance update script lock, defer GPIB warning until GUI shown (test target from v2.0.24)"
 }
