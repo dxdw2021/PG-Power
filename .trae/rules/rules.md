@@ -1,4 +1,4 @@
-﻿# PG-Power 项目规则
+# PG-Power 项目规则
 
 ## 项目概览
 
@@ -46,22 +46,29 @@ git push origin master --tags        # → gitcode.com
 git push github master --tags       # → github.com
 ```
 
-### Step 4 — 创建 GitHub Release 并上传 exe（必须手动）
+### Step 4 — 创建 GitCode Release 并上传 exe（必须手动）
 
-浏览器打开: `https://github.com/dxdw2021/PG-Power/releases/new?tag=vX.Y.Z&title=PG-Power%20vX.Y.Z`
+浏览器打开: `https://gitcode.com/dxdw2021/PG-Power/releases/create`
 
-**原因**: 系统 GH_TOKEN 没有 release upload 权限（HTTP 403 `Resource not accessible by integration`），必须手动拖文件上传。
+填写 tag（如 `vX.Y.Z`）、标题、描述后，**在发布描述下方的附件区域拖入 exe 文件**，点「发布」。
+
+编辑已有 Release: `https://gitcode.com/dxdw2021/PG-Power/releases/edit/vX.Y.Z`
+
+**GitCode Release API 不支持 asset 上传**，必须手动在网页上拖入 exe 文件。
 
 ### Step 5 — 更新 version.json（重要！影响在线更新检测）
-提交后，确认 `version.json` 中的 `exe_url` 指向 **GitHub Release 官方下载链接**：
+提交后，确认 `version.json` 中的 `exe_url` 指向 **GitCode Release 官方下载链接**：
 ```
-https://github.com/dxdw2021/PG-Power/releases/download/vX.Y.Z/PG-Power_vX.Y.Z.exe
+https://gitcode.com/dxdw2021/PG-Power/releases/download/vX.Y.Z/PG-Power_vX.Y.Z.exe
 ```
-**不要用 jsdelivr CDN**（单文件限 50MB，exe 70MB → 403 Forbidden）。
 
 ### Step 6 — 验证
-- GitHub Release 页面能看到 asset（不是空列表）
-- `https://api.github.com/repos/dxdw2021/PG-Power/releases/tags/vX.Y.Z` 返回 `assets` 非空
+- GitCode Release 页面能看到 asset（不是空列表）
+- GitCode API 返回 assets 非空
+  ```powershell
+  $token = $env:AG_TOKEN
+  Invoke-RestMethod -Uri "https://gitcode.com/api/v5/repos/dxdw2021/PG-Power/releases/tags/vX.Y.Z" -Headers @{PRIVATE-TOKEN=$token}
+  ```
 - 程序内点「检查更新」能检测到新版本
 
 ## 在线更新机制
@@ -69,16 +76,25 @@ https://github.com/dxdw2021/PG-Power/releases/download/vX.Y.Z/PG-Power_vX.Y.Z.ex
 更新模块: `updater.py`（零第三方依赖，只用标准库）
 
 **检测源优先级**:
-1. GitHub Release API（`github_repo` 配置项，最准）
-2. 自动 CDN 候选（raw.githubusercontent.com → jsdelivr → fastgit）
+1. GitCode contents API（`gitcode.com/api/v5/repos/.../contents/version.json`，国内最快 600ms）
+2. GitHub Release API（海外镜像，国内慢但备份）
 3. 静态 JSON `static_url` 兜底
 
-**下载源**: 永远用 GitHub Release 官方 URL（`github.com/.../releases/download/tag/name.exe`），不要用 jsdelivr / fastgit（jsdelivr 单文件 50MB 限制，fastgit 不稳定）。
+**下载源**: GitCode Release 官方 URL（`gitcode.com/.../releases/download/tag/name.exe`），国内下载速度比 GitHub 快 10 倍+。
+
+**更新替换机制**: PowerShell 独立进程（`pg_power_update.ps1`）
+- `wscript.exe` 启动完全独立于主进程
+- 主进程退出后，PowerShell 脚本检测进程名消失
+- `Move-Item -Force` 替换 exe，失败降级 `Copy-Item -Force`
+- `Start-Process` 启动新版本
+- 每步写入 `%TEMP%\pg_power_update.log` 便于追踪
 
 ## 注意事项
 
 - **12V 电压支持**: 输出控制 SpinBox 范围 `setRange(0, 30)` 默认 5.0V；合并模式电压刻度 `setRange(-10, 30)`
-- **PyInstaller 大文件**: 70MB exe 直接 git tracking（GitHub 限 100MB），不要用 git-lfs（jsdelivr 不代理 LFS，会 403）
-- **双仓库推送**: origin → gitcode.com:dxdw2021/PG-Power，github → github.com/dxdw2021/PG-Power
+- **PyInstaller 大文件**: 70MB exe 直接 git tracking（GitCode 限 500MB）
+- **双仓库推送**: origin → gitcode.com:dxdw2021/PG-Power（国内主），github → github.com/dxdw2021/PG-Power（海外镜像）
 - **GPIB/USB 驱动**: ni4882.dll、libusb-1.0.dll 已打包进 spec 的 binaries
 - **git config**: 新机器先 `git config user.email "dxdw2021@qq.com"` 和 `git config user.name "dxdw2021"`
+- **AG_TOKEN**: 本机环境变量 `AG_TOKEN`（GitCode 个人访问令牌），用于 API 调用
+- **GitCode Release URL 格式**: `https://gitcode.com/<owner>/<repo>/releases/download/<tag>/<filename>`
