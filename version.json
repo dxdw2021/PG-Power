@@ -1,5 +1,5 @@
 {
   "version": "2.0.16",
-  "exe_url": "https://gitcode.com/dxdw2021/PG-Power/releases/download/v2.0.16/PG-Power_v2.0.16.exe",
-  "notes": "v2.0.16: PowerShell独立进程修复更新替换, 切换GitCode国内下载源"
+  "exe_url": "https://raw.gitcode.com/dxdw2021/PG-Power/master/releases/PG-Power_v2.0.16.exe",
+  "notes": "v2.0.16: PowerShell独立进程修复更新替换"
 }
