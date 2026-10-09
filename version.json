@@ -1,5 +1,5 @@
 {
   "version": "2.0.14",
-  "exe_url": "https://github.com/dxdw2021/PG-Power/releases/download/v2.0.14/PG-Power_v2.0.14.exe",
+  "exe_url": "https://gitcode.com/dxdw2021/PG-Power/-/releases/v2.0.14/download/pg-power_v2.0.14.exe",
   "notes": "v2.0.14: 修复在线更新替换逻辑 (纯 Python 线程覆盖)"
 }
