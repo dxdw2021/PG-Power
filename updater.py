@@ -243,10 +243,11 @@ def download_exe(url, dest_path, progress_cb=None):
 
 
 def apply_update(new_exe_path, current_exe_path, wait_sec=3):
-    """纯 Python 后台线程方案: 等进程退出 -> 覆盖 -> 重启。不依赖 bat/cmd"""
-    import threading, time as _time
+    """PowerShell 独立进程: 原生支持 Unicode 中文路径"""
+    import subprocess as _sp
     current_exe_path = os.path.abspath(current_exe_path)
     new_exe_path = os.path.abspath(new_exe_path)
+    proc_name = os.path.splitext(os.path.basename(current_exe_path))[0]
 
     if not getattr(sys, "frozen", False):
         try:
@@ -256,69 +257,65 @@ def apply_update(new_exe_path, current_exe_path, wait_sec=3):
             logger.error(f"[更新] copy 失败: {e}")
         return False, None
 
-    def _do_update():
-        """后台线程: 等主进程退出 -> 覆盖 -> 启动"""
-        log_path = os.path.join(tempfile.gettempdir(), "pg_power_update.log")
-        try:
-            with open(log_path, "w", encoding="utf-8") as log:
-                def L(msg):
-                    log.write(msg + chr(10))
-                    log.flush()
-                L("update start")
-                L(f"  new={new_exe_path}")
-                L(f"  cur={current_exe_path}")
+    log_p = os.path.join(tempfile.gettempdir(), "pg_power_update.log")
+    ps1_p = os.path.join(tempfile.gettempdir(), "pg_power_update.ps1")
+    NL = chr(13) + chr(10)
+    DQ = chr(34)
 
-                # 等主进程退出 (最多 wait_sec + 30 秒)
-                L("  waiting main process exit...")
-                for i in range(wait_sec, wait_sec + 35):
-                    # 检查文件是否可写 (进程还在运行时文件被锁定)
-                    try:
-                        with open(current_exe_path, "ab") as test_f:
-                            pass
-                        L(f"  target free after {i}s")
-                        break
-                    except PermissionError:
-                        pass
-                    if i == wait_sec + 34:
-                        L("  TIMEOUT giving up after 35s")
-                        return
-                    _time.sleep(1)
+    lp = log_p.replace(os.sep, "/")
+    np_ = new_exe_path.replace(os.sep, "/")
+    cp_ = current_exe_path.replace(os.sep, "/")
 
-                # 移动新 exe 到旧位置 (先 move 再 copy fallback)
-                L("  trying move...")
-                try:
-                    shutil.move(new_exe_path, current_exe_path)
-                    L("  move OK")
-                except Exception as e:
-                    L(f"  move failed: {e}, trying copy...")
-                    try:
-                        shutil.copy2(new_exe_path, current_exe_path)
-                        L("  copy OK")
-                    except Exception as e2:
-                        L(f"  copy failed: {e2}, trying delete+copy...")
-                        try:
-                            os.remove(current_exe_path)
-                            _time.sleep(1)
-                            shutil.copy2(new_exe_path, current_exe_path)
-                            L("  delete+copy OK")
-                        except Exception as e3:
-                            L(f"  ALL FAILED: {e3}")
-                            return
+    lines = [
+        "$ErrorActionPreference = 'Continue'",
+        "$log = " + DQ + lp + DQ,
+        '"update start" > $log',
+        '"new=' + np_ + '" >> $log',
+        '"cur=' + cp_ + '" >> $log',
+        '"proc=' + proc_name + '" >> $log',
+        'Start-Sleep -Seconds ' + str(max(3, wait_sec)),
+        '"waiting process exit..." >> $log',
+        "$deadline = (Get-Date).AddSeconds(60)",
+        "while ((Get-Date) -lt $deadline) {",
+        "    $p = Get-Process -Name " + DQ + proc_name + DQ + " -ErrorAction SilentlyContinue",
+        "    if (-not $p) { break }",
+        "    Start-Sleep -Seconds 1",
+        "}",
+        '"process exited, moving..." >> $log',
+        "try {",
+        "    Move-Item -LiteralPath " + DQ + np_ + DQ + " -Destination " + DQ + cp_ + DQ + " -Force >> $log 2>&1",
+        '    "move OK" >> $log',
+        "} catch {",
+        '    "move failed: $_" >> $log',
+        "    try { Copy-Item -LiteralPath " + DQ + np_ + DQ + " -Destination " + DQ + cp_ + DQ + " -Force >> $log 2>&1; 'copy OK' >> $log }",
+        '    catch { "copy failed: $_" >> $log }',
+        "}",
+        '"launching..." >> $log',
+        "Start-Process -FilePath " + DQ + cp_ + DQ,
+        '"launched, done" >> $log',
+    ]
+    ps_script = NL.join(lines) + NL
 
-                # 启动新版本
-                L("  launching new exe...")
-                import subprocess as _sp
-                _sp.Popen([current_exe_path], cwd=os.path.dirname(current_exe_path))
-                L("  launched! update done")
-        except Exception as e:
-            logger.exception(f"[更新] 后台更新异常: {e}")
+    try:
+        with open(ps1_p, "w", encoding="utf-8-sig") as f:
+            f.write(ps_script)
+        logger.info(f"[更新] ps1 已生成: {ps1_p}")
+    except OSError as e:
+        logger.error(f"[更新] 写 ps1 失败: {e}")
+        return False, None
 
-    t = threading.Thread(target=_do_update, daemon=True)
-    t.start()
-    logger.info("[更新] 后台更新线程已启动, 等主进程退出后自动覆盖")
-    return True, None
+    try:
+        _sp.Popen(
+            ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden",
+             "-ExecutionPolicy", "Bypass", "-File", ps1_p],
+            creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0)
+        )
+        logger.info("[更新] PowerShell 已启动, 主进程即将退出")
+    except OSError as e:
+        logger.error(f"[更新] 启动 PowerShell 失败: {e}")
+        return False, None
 
-
+    return True, ps1_p
 
 def current_exe_dir():
     if getattr(sys, "frozen", False):

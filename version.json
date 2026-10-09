@@ -1,5 +1,5 @@
 {
-  "version": "2.0.15",
-  "exe_url": "''' + $correctUrl + '''",
-  "notes": "v2.0.15: 切换 GitCode 下载源 + 纯 Python 线程修复更新替换"
+  "version": "2.0.16",
+  "exe_url": "https://gitcode.com/dxdw2021/PG-Power/releases/download/v2.0.16/PG-Power_v2.0.16.exe",
+  "notes": "v2.0.16: PowerShell独立进程修复更新替换, 切换GitCode国内下载源"
 }
